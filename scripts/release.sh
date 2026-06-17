@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# Build (and optionally publish) a self-contained lfg release bundle LOCALLY.
+# Build (and optionally publish) an lfg release bundle LOCALLY.
 #
-# Why local: lfg depends on an AI-SDK ("vibes") provider that lives on a private
-# custom registry GitHub-hosted runners can't reach. This box already has that
-# provider resolved in node_modules, so we build the bundle here and upload it
-# straight to a GitHub Release - no registry access needed in CI.
+# The bundle ships source, the prebuilt web UI, and optional tarballs for
+# unpublished/private packages. Public dependencies are installed on the target
+# machine so native/optional packages resolve for that OS.
 #
 # Usage:
-#   scripts/release.sh                 # build dist/lfg-<os>-<arch>.tar.gz only
+#   scripts/release.sh                 # build dist/lfg-bundle.tar.gz only
 #   scripts/release.sh v0.1.0          # build AND publish a GitHub release (gh)
 #   SKIP_INSTALL=1 scripts/release.sh  # reuse the current node_modules / web/dist
 #
 # Env:
 #   SKIP_INSTALL=1        skip `bun install` + web build (use the tree as-is)
 #   LFG_REPO_SLUG         GitHub owner/repo to publish to (default: BennyKok/lfg)
-#   LFG_TARGET_PLATFORM   override target label, e.g. linux-x64 or darwin-arm64.
-#                         Must match this host unless LFG_ALLOW_CROSS_TARGET=1.
+#   LFG_VENDOR_PACKAGES   space/comma-separated package names to pack from
+#                         node_modules into vendor/*.tgz, and rewrite staged
+#                         package.json deps to file:vendor/<tarball>.
 
 set -euo pipefail
 
@@ -26,28 +26,13 @@ cd "$ROOT"
 OUT_DIR="$ROOT/dist"
 REPO_SLUG="${LFG_REPO_SLUG:-BennyKok/lfg}"
 VERSION="${1:-}"
+ASSET="${LFG_RELEASE_ASSET:-lfg-bundle.tar.gz}"
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v bun >/dev/null || die "bun not found on PATH."
 command -v tar >/dev/null || die "tar not found on PATH."
-
-norm_os() {
-  case "$(uname -s)" in
-    Linux) printf 'linux' ;;
-    Darwin) printf 'darwin' ;;
-    *) die "Unsupported release OS: $(uname -s)" ;;
-  esac
-}
-
-norm_arch() {
-  case "$(uname -m)" in
-    x86_64|amd64) printf 'x64' ;;
-    arm64|aarch64) printf 'arm64' ;;
-    *) die "Unsupported release arch: $(uname -m)" ;;
-  esac
-}
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -59,12 +44,34 @@ sha256_file() {
   fi
 }
 
-HOST_PLATFORM="$(norm_os)-$(norm_arch)"
-TARGET_PLATFORM="${LFG_TARGET_PLATFORM:-$HOST_PLATFORM}"
-if [ "$TARGET_PLATFORM" != "$HOST_PLATFORM" ] && [ "${LFG_ALLOW_CROSS_TARGET:-0}" != "1" ]; then
-  die "Refusing to build $TARGET_PLATFORM on $HOST_PLATFORM. Vendored node_modules is platform-specific; build this asset on a $TARGET_PLATFORM host."
-fi
-ASSET="${LFG_RELEASE_ASSET:-lfg-$TARGET_PLATFORM.tar.gz}"
+pkg_dir() {
+  printf '%s/node_modules/%s' "$ROOT" "$1"
+}
+
+rewrite_dep_to_vendor_tarball() {
+  local manifest="$1"
+  local pkg="$2"
+  local tarball="$3"
+  PKG_NAME="$pkg" TARBALL="vendor/$tarball" MANIFEST="$manifest" bun -e '
+const fs = require("node:fs");
+const manifest = process.env.MANIFEST;
+const pkg = process.env.PKG_NAME;
+const tarball = process.env.TARBALL;
+const json = JSON.parse(fs.readFileSync(manifest, "utf8"));
+let found = false;
+for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
+  if (json[section] && Object.prototype.hasOwnProperty.call(json[section], pkg)) {
+    json[section][pkg] = `file:${tarball}`;
+    found = true;
+  }
+}
+if (!found) {
+  if (!json.dependencies) json.dependencies = {};
+  json.dependencies[pkg] = `file:${tarball}`;
+}
+fs.writeFileSync(manifest, JSON.stringify(json, null, 2) + "\n");
+'
+}
 
 if [ "${SKIP_INSTALL:-}" != "1" ]; then
   say "Installing dependencies (uses your configured registry)..."
@@ -75,67 +82,37 @@ else
   say "SKIP_INSTALL=1 - reusing existing node_modules + web/dist."
 fi
 
-[ -d node_modules ] || die "node_modules missing - run without SKIP_INSTALL."
 [ -f web/dist/index.html ] || die "web/dist missing - run without SKIP_INSTALL."
 
-# Stage exactly what the runtime needs (mirrors .github/workflows/release.yml).
+# Stage exactly what the runtime needs. Public deps are intentionally not
+# included; setup.sh runs a target-side production install after extracting.
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/lfg-release.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
-mkdir -p "$STAGE/lfg/web"
+mkdir -p "$STAGE/lfg/web" "$STAGE/lfg/vendor"
 say "Staging bundle..."
 cp -r \
   src agents scripts package.json bun.lock tsconfig.json \
   .env.example README.md LICENSE SECURITY.md CONTRIBUTING.md \
-  node_modules \
   "$STAGE/lfg/"
 cp -r web/dist "$STAGE/lfg/web/dist"
 
-# Drop the vendored agent runtimes entirely - lfg spawns the SYSTEM claude /
-# codex / opencode binaries off PATH (LFG_*_PATH -> Bun.which; see the harnesses
-# in src/agents/backends/), and scripts/setup.sh installs all three on the box.
-# The bundled per-platform binaries were only a fallback; shipping them added
-# ~1.3GB. We keep the JS wrappers/providers (claude-agent-sdk, @openai/codex,
-# opencode-ai, the ai-sdk-provider-* packages) - only the heavy binary packages
-# and dev-only deps are removed.
-PRUNE=(
-  # Anthropic Claude Code platform binaries
-  "@anthropic-ai/claude-agent-sdk-*"
-  # OpenAI Codex platform binaries
-  "@openai/codex-*"
-  # OpenCode platform binaries + the .bin shim into them
-  "opencode-linux-*"
-  "opencode-darwin-*"
-  "opencode-win32-*"
-  "opencode-freebsd-*"
-  ".bin/opencode"
-  # dev-only
-  "typescript"
-  "bun-types"
-  "@types"
-)
-case "$TARGET_PLATFORM" in
-  linux-*)
-    PRUNE+=(
-      "@img/*darwin*"
-      "@img/*win32*"
-      "@img/*freebsd*"
-      "fsevents"
-    )
-    ;;
-  darwin-*)
-    PRUNE+=(
-      "@img/*linux*"
-      "@img/*win32*"
-      "@img/*freebsd*"
-    )
-    ;;
-esac
-say "Pruning vendored agent binaries + dev-only packages..."
-for p in "${PRUNE[@]}"; do
-  for match in "$STAGE/lfg/node_modules"/$p; do
-    [ -e "$match" ] && rm -rf "$match"
+VENDOR_PACKAGES="${LFG_VENDOR_PACKAGES:-}"
+VENDOR_PACKAGES="${VENDOR_PACKAGES//,/ }"
+if [ -n "$VENDOR_PACKAGES" ]; then
+  command -v npm >/dev/null || die "npm is required to pack LFG_VENDOR_PACKAGES."
+  [ -d node_modules ] || die "node_modules missing - run without SKIP_INSTALL so vendor packages can be packed."
+  say "Packing vendor packages..."
+  for pkg in $VENDOR_PACKAGES; do
+    dir="$(pkg_dir "$pkg")"
+    [ -d "$dir" ] || die "Vendor package $pkg not found at $dir. Run bun install first."
+    packed="$(npm pack "$dir" --pack-destination "$STAGE/lfg/vendor" --silent)"
+    packed="$(basename "$packed")"
+    say "  $pkg -> vendor/$packed"
+    rewrite_dep_to_vendor_tarball "$STAGE/lfg/package.json" "$pkg" "$packed"
   done
-done
+else
+  rmdir "$STAGE/lfg/vendor"
+fi
 
 mkdir -p "$OUT_DIR"
 say "Packing ${ASSET}..."

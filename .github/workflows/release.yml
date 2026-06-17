@@ -1,10 +1,9 @@
 name: release
 
 # Builds a self-contained "bundled" release tarball and attaches it to a GitHub
-# Release. The tarball ships the source tree + a fully-resolved node_modules +
-# the prebuilt web UI, so end users never run `bun install` against the public
-# registry — which is the whole point: the AI-SDK ("vibes") provider lfg depends
-# on is NOT on the public npm registry, so it must be vendored into the artifact.
+# Release. The tarball ships the source tree + prebuilt web UI + optional
+# vendor/*.tgz packages for unpublished/private deps. Public dependencies are
+# installed on the target machine so native optional deps match that OS.
 #
 # Trigger: push a version tag (v1.2.3) or run manually from the Actions tab.
 
@@ -51,7 +50,7 @@ jobs:
           # bun also reads npm-style token lines from .npmrc
           echo "//$HOST/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
 
-      - name: Install dependencies (vendors the private provider)
+      - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Build the web UI
@@ -68,10 +67,10 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          # Platform asset name, e.g. /releases/latest/download/lfg-linux-x64.tar.gz
+          # Stable asset name: /releases/latest/download/lfg-bundle.tar.gz
           tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
-            dist/lfg-*.tar.gz
-            dist/lfg-*.tar.gz.sha256
+            dist/lfg-bundle.tar.gz
+            dist/lfg-bundle.tar.gz.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true

@@ -30,8 +30,9 @@ TS_AUTHKEY="${TS_AUTHKEY:-}"
 SERVICE="lfg"
 SERVICE_LABEL="dev.omg.lfg"
 # Install source:
-#   release (default) - download the bundled tarball (vendored node_modules incl.
-#                       the private "vibes" AI-SDK provider). No registry install.
+#   release (default) - download the bundled tarball, then run a production
+#                       install. Private/unpublished deps may be bundled under
+#                       vendor/*.tgz and referenced from package.json.
 #   source            - git clone + `bun install` (for development / forks that
 #                       can resolve the private provider themselves).
 LFG_INSTALL_MODE="${LFG_INSTALL_MODE:-release}"
@@ -226,9 +227,8 @@ if [ "$LFG_INSTALL_MODE" = "source" ]; then
   say "Installing dependencies..."
   ( cd "$LFG_DIR" && "$BUN_BIN" install )
 else
-  # Release mode: download the self-contained tarball (vendored node_modules,
-  # incl. the private "vibes" AI-SDK provider that isn't on the public registry)
-  # and extract it over $LFG_DIR. No `bun install` - nothing to resolve.
+  # Release mode: download source + prebuilt web UI + optional vendor tarballs,
+  # extract them over $LFG_DIR, then install public deps on this target platform.
   release_url() {
     local asset="$1"
     if [ "$LFG_RELEASE" = "latest" ]; then
@@ -238,7 +238,7 @@ else
     fi
   }
 
-  ASSET="${LFG_RELEASE_ASSET:-$(platform_asset)}"
+  ASSET="${LFG_RELEASE_ASSET:-lfg-bundle.tar.gz}"
   URL="$(release_url "$ASSET")"
   say "Downloading bundled release (${LFG_RELEASE}) from ${LFG_REPO_SLUG}..."
   TMP_TGZ="$(mktemp_tgz)"
@@ -246,14 +246,14 @@ else
     rm -f "$TMP_TGZ"
     if [ -n "${LFG_RELEASE_ASSET:-}" ]; then
       die "Could not download $URL - check the tag, or use LFG_INSTALL_MODE=source."
-    elif [ "${LFG_ALLOW_LEGACY_BUNDLE:-0}" = "1" ]; then
-      ASSET="lfg-bundle.tar.gz"
+    elif [ "${LFG_ALLOW_PLATFORM_BUNDLE:-0}" = "1" ]; then
+      ASSET="$(platform_asset)"
       URL="$(release_url "$ASSET")"
-      warn "Platform-specific bundle not found; trying legacy asset $ASSET."
+      warn "Platform-neutral bundle not found; trying platform asset $ASSET."
       TMP_TGZ="$(mktemp_tgz)"
       curl -fSL "$URL" -o "$TMP_TGZ" || die "Could not download $URL - check the tag, or use LFG_INSTALL_MODE=source."
     else
-      die "Could not download $URL. This release does not have an asset for this platform yet. Build/publish $(platform_asset), set LFG_RELEASE_ASSET explicitly, or use LFG_INSTALL_MODE=source."
+      die "Could not download $URL - check the tag, set LFG_RELEASE_ASSET explicitly, or use LFG_INSTALL_MODE=source."
     fi
   fi
   # Verify the checksum when the release ships one (best-effort).
@@ -268,6 +268,14 @@ else
   say "Extracting into ${LFG_DIR}..."
   tar -xzf "$TMP_TGZ" -C "$LFG_DIR" --strip-components=1
   rm -f "$TMP_TGZ" "$TMP_TGZ.sha256"
+
+  if [ "${LFG_SKIP_BUN_INSTALL:-0}" != "1" ]; then
+    say "Installing production dependencies on this machine..."
+    rm -rf "$LFG_DIR/node_modules"
+    ( cd "$LFG_DIR" && unset CI && "$BUN_BIN" install --production )
+  else
+    warn "Skipping production dependency install because LFG_SKIP_BUN_INSTALL=1."
+  fi
 fi
 
 # ---- 6. expose the `lfg` command on PATH ----

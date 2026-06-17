@@ -25,8 +25,10 @@ with actionable follow-ups.
 
 ## Requirements
 
-The release bundle vendors all JS deps + the prebuilt web UI, but **not** the
-agent runtimes — lfg drives whatever it finds on `PATH`. The target box needs:
+The release bundle ships source + the prebuilt web UI. Public JS deps are
+installed on the target machine so native/optional packages match that OS. lfg
+does **not** vendor agent runtimes; it drives whatever it finds on `PATH`. The
+target box needs:
 
 | | Requirement | Notes |
 | --- | --- | --- |
@@ -41,9 +43,7 @@ agent runtimes — lfg drives whatever it finds on `PATH`. The target box needs:
 `setup.sh` verifies these requirements and does not install or upgrade agent
 CLIs by default, because those tools own user auth/config. On Linux it installs
 base system packages and Bun by default for fresh VPS use; on macOS it only
-reports missing system requirements unless you explicitly opt in. Because the
-bundle ships no prebuilt agent binaries, its `node_modules` is pure JS; only Bun
-and the agent CLIs are platform-specific.
+reports missing system requirements unless you explicitly opt in.
 
 ## One-command setup
 
@@ -62,13 +62,12 @@ TS_AUTHKEY=tskey-auth-xxxx \
 ```
 
 The script is idempotent and does, in order: checks/installable system
-requirements; downloads the latest **prebuilt release bundle** (a self-contained
-tarball with `node_modules` and the web UI already vendored, no registry install
-needed); joins your tailnet when Tailscale is available; writes a `.env`; and
-runs the web UI as a background user service (**systemd** on Linux, **launchd**
-on macOS). When Tailscale is connected, setup also configures `tailscale serve`
-(HTTPS on your MagicDNS name, tailnet-only). When it finishes it prints the URL
-and any missing agent CLI warnings.
+requirements; downloads the latest **prebuilt release bundle**; installs
+production dependencies on the target machine; joins your tailnet when Tailscale
+is available; writes a `.env`; and runs the web UI as a background user service
+(**systemd** on Linux, **launchd** on macOS). When Tailscale is connected, setup
+also configures `tailscale serve` (HTTPS on your MagicDNS name, tailnet-only).
+When it finishes it prints the URL and any missing agent CLI warnings.
 
 > Pin a version with `LFG_RELEASE=v0.1.0`, or build from source instead with
 > `LFG_INSTALL_MODE=source` (git clone + `bun install`).
@@ -88,32 +87,25 @@ Requires [Bun](https://bun.sh), `tmux`, `git`, and the
 [Claude CLI](https://docs.claude.com/en/docs/claude-code) (and optionally Codex)
 on `PATH`.
 
-Easiest — grab the prebuilt bundle for your platform (no `bun install`;
-vendored deps):
+Easiest — grab the prebuilt bundle, then install production deps:
 
 ```bash
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64|Linux-amd64) ASSET=lfg-linux-x64.tar.gz ;;
-  Linux-arm64|Linux-aarch64) ASSET=lfg-linux-arm64.tar.gz ;;
-  Darwin-x86_64) ASSET=lfg-darwin-x64.tar.gz ;;
-  Darwin-arm64) ASSET=lfg-darwin-arm64.tar.gz ;;
-  *) echo "unsupported platform"; exit 1 ;;
-esac
-mkdir -p ~/lfg && curl -fSL "https://github.com/BennyKok/lfg/releases/latest/download/$ASSET" \
+mkdir -p ~/lfg && curl -fSL \
+  https://github.com/BennyKok/lfg/releases/latest/download/lfg-bundle.tar.gz \
   | tar -xz --strip-components=1 -C ~/lfg
 cd ~/lfg && cp .env.example .env   # edit as needed
+rm -rf node_modules && bun install --production
 bun run serve                      # → http://127.0.0.1:8766
 ```
 
-> The bundle is slim (~80 MB) because it does **not** vendor the agent runtimes —
+> The bundle is slim because it does **not** vendor public `node_modules` or agent runtimes —
 > lfg drives whatever `claude` / `codex` / `opencode` it finds on `PATH` (override
 > via `LFG_CLAUDE_PATH` / `LFG_CODEX_PATH` / `LFG_OPENCODE_PATH`). Install the
 > agent CLIs you intend to use yourself (`claude` is the default agent), or opt in
-> to the setup-managed installers listed above.
+> to the setup-managed installers listed above. Unpublished/private packages can
+> be bundled as `vendor/*.tgz`; public packages are installed from the registry.
 
-From source (note: lfg depends on an AI-SDK provider that isn't on the public
-npm registry, so `bun install` only resolves if you can reach that provider —
-otherwise use the bundle above):
+From source:
 
 ```bash
 git clone https://github.com/BennyKok/lfg.git && cd lfg
@@ -187,14 +179,14 @@ git pull && bun install && systemctl --user restart lfg
 git pull && bun install && launchctl kickstart -k gui/$(id -u)/dev.omg.lfg
 ```
 
-Releases are built **locally** with [`scripts/release.sh`](scripts/release.sh) —
-the bundled provider lives on a private registry GitHub runners can't reach, so
-the maintainer builds each platform bundle on a matching machine that can
-resolve it and uploads it via `gh`:
+Releases are built **locally** with [`scripts/release.sh`](scripts/release.sh).
+If you depend on unpublished/private packages, set `LFG_VENDOR_PACKAGES` to pack
+those installed packages into `vendor/*.tgz` and rewrite the release manifest to
+install them from the bundle:
 
 ```bash
-scripts/release.sh v0.1.0     # build + publish lfg-<os>-<arch>.tar.gz
-scripts/release.sh            # build dist/lfg-<os>-<arch>.tar.gz only
+LFG_VENDOR_PACKAGES="your-private-package @scope/private-provider" scripts/release.sh v0.1.0
+scripts/release.sh            # build dist/lfg-bundle.tar.gz only
 ```
 
 The [`release` workflow](.github/workflows/release.yml) is the CI equivalent,
