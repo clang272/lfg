@@ -2,6 +2,8 @@
 
 Run and manage your AI coding agents on your own VPS.
 
+**Website:** [lfg.apps.omg.dev](https://lfg.apps.omg.dev)
+
 `lfg` turns a plain Linux box into a control plane for **Claude Code** and
 **Codex** agents. It spawns each agent in a long-lived `tmux` session, gives you
 an installable web UI to start, watch, steer, and answer them from any device,
