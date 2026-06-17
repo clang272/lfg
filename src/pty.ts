@@ -10,12 +10,17 @@
 // (escape sequences intact) that a faithful browser renderer wants.
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
-// openpty lives in libutil on glibc < 2.34 and was folded into libc after; try
-// the historical home first, then libc, so this works across distros.
-function loadOpenpty(): (typeof import("bun:ffi"))["CFunction"] extends never
-  ? any
-  : any {
-  for (const lib of ["libutil.so.1", "libc.so.6", "libutil.so"]) {
+const IS_DARWIN = process.platform === "darwin";
+const IS_LINUX = process.platform === "linux";
+
+// openpty lives in libutil on Linux glibc < 2.34 and was folded into libc after.
+// On macOS it is exposed through libutil/libSystem. Probe lazily so a missing PTY
+// implementation cannot prevent the main web server from starting.
+function loadOpenpty(): any {
+  const libs = IS_DARWIN
+    ? ["libutil.dylib", "/usr/lib/libutil.dylib", "libSystem.B.dylib", "/usr/lib/libSystem.B.dylib"]
+    : ["libutil.so.1", "libc.so.6", "libutil.so"];
+  for (const lib of libs) {
     try {
       const h = dlopen(lib, {
         openpty: {
@@ -26,23 +31,40 @@ function loadOpenpty(): (typeof import("bun:ffi"))["CFunction"] extends never
       if (h.symbols.openpty) return h;
     } catch {}
   }
-  throw new Error("openpty() not found in libutil/libc — cannot allocate a PTY");
+  throw new Error("openpty() not found in system libraries - cannot allocate a PTY");
 }
 
-const PTY = loadOpenpty();
-const LIBC = dlopen("libc.so.6", {
-  ioctl: { args: [FFIType.int, FFIType.u64, FFIType.ptr], returns: FFIType.int },
-  close: { args: [FFIType.int], returns: FFIType.int },
-  read: { args: [FFIType.int, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
-  write: { args: [FFIType.int, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
-  fcntl: { args: [FFIType.int, FFIType.int, FFIType.int], returns: FFIType.int },
-});
+function loadLibc(): any {
+  const libs = IS_DARWIN
+    ? ["libSystem.B.dylib", "/usr/lib/libSystem.B.dylib", "libc.dylib"]
+    : ["libc.so.6"];
+  for (const lib of libs) {
+    try {
+      return dlopen(lib, {
+        ioctl: { args: [FFIType.int, FFIType.u64, FFIType.ptr], returns: FFIType.int },
+        close: { args: [FFIType.int], returns: FFIType.int },
+        read: { args: [FFIType.int, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
+        write: { args: [FFIType.int, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
+        fcntl: { args: [FFIType.int, FFIType.int, FFIType.int], returns: FFIType.int },
+      });
+    } catch {}
+  }
+  throw new Error("libc/libSystem not found - cannot allocate a PTY");
+}
 
-// Linux x86_64 constants.
+let PTY: any | null = null;
+let LIBC: any | null = null;
+
+function ptySymbols(): { pty: any; libc: any } {
+  PTY ??= loadOpenpty();
+  LIBC ??= loadLibc();
+  return { pty: PTY, libc: LIBC };
+}
+
 const F_GETFL = 3;
 const F_SETFL = 4;
-const O_NONBLOCK = 0o4000;
-const TIOCSWINSZ = 0x5414;
+const O_NONBLOCK = IS_DARWIN ? 0x0004 : 0o4000;
+const TIOCSWINSZ = IS_DARWIN ? 0x80087467 : 0x5414;
 
 function winsizeBuf(cols: number, rows: number): Uint16Array {
   // struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel }
@@ -73,7 +95,8 @@ export class PtyBridge {
     const amaster = new Int32Array(1);
     const aslave = new Int32Array(1);
     const ws = winsizeBuf(cols, rows);
-    const rc = PTY.symbols.openpty(
+    const { pty, libc } = ptySymbols();
+    const rc = pty.symbols.openpty(
       ptr(amaster),
       ptr(aslave),
       null,
@@ -84,18 +107,20 @@ export class PtyBridge {
     this.master = amaster[0];
     const slave = aslave[0];
 
-    // `setsid -c <argv>`: new session + acquire the slave pty as the controlling
-    // terminal, which `tmux attach`/`new-session` requires.
-    this.proc = Bun.spawn(["setsid", "-c", ...argv], {
+    // Linux util-linux `setsid -c <argv>` starts a new session and acquires the
+    // slave pty as the controlling terminal. macOS has no compatible setsid CLI;
+    // spawning directly with stdio attached to the pty is the best portable path.
+    const spawnArgv = IS_LINUX ? ["setsid", "-c", ...argv] : argv;
+    this.proc = Bun.spawn(spawnArgv, {
       stdio: [slave, slave, slave],
       cwd: opts.cwd,
       env: { TERM: "xterm-256color", ...process.env, ...opts.env },
     });
-    LIBC.symbols.close(slave); // parent keeps only the master
+    libc.symbols.close(slave); // parent keeps only the master
 
     // Non-blocking master so the drain loop never stalls the event loop.
-    const flags = LIBC.symbols.fcntl(this.master, F_GETFL, 0);
-    LIBC.symbols.fcntl(this.master, F_SETFL, flags | O_NONBLOCK);
+    const flags = libc.symbols.fcntl(this.master, F_GETFL, 0);
+    libc.symbols.fcntl(this.master, F_SETFL, flags | O_NONBLOCK);
   }
 
   onData(cb: (chunk: Uint8Array) => void): void {
@@ -113,9 +138,10 @@ export class PtyBridge {
 
   private drain(): void {
     if (this.closed) return;
+    const { libc } = ptySymbols();
     for (;;) {
       const n = Number(
-        LIBC.symbols.read(this.master, ptr(this.rbuf), BigInt(this.rbuf.length)),
+        libc.symbols.read(this.master, ptr(this.rbuf), BigInt(this.rbuf.length)),
       );
       if (n > 0) {
         // Copy out of the reused scratch buffer before handing it off.
@@ -134,16 +160,18 @@ export class PtyBridge {
 
   write(data: Uint8Array | string): void {
     if (this.closed || this.master < 0) return;
+    const { libc } = ptySymbols();
     const b = typeof data === "string" ? this.enc.encode(data) : data;
-    LIBC.symbols.write(this.master, ptr(b), BigInt(b.length));
+    libc.symbols.write(this.master, ptr(b), BigInt(b.length));
   }
 
   resize(cols: number, rows: number): void {
     if (this.closed || this.master < 0) return;
+    const { libc } = ptySymbols();
     const ws = winsizeBuf(cols, rows);
     // Updating the pty winsize raises SIGWINCH in the foreground process, so the
     // attached TUI repaints at the new geometry on its own.
-    LIBC.symbols.ioctl(this.master, BigInt(TIOCSWINSZ), ptr(ws));
+    libc.symbols.ioctl(this.master, BigInt(TIOCSWINSZ), ptr(ws));
   }
 
   close(): void {
@@ -154,7 +182,8 @@ export class PtyBridge {
       this.poll = null;
     }
     if (this.master >= 0) {
-      LIBC.symbols.close(this.master);
+      const { libc } = ptySymbols();
+      libc.symbols.close(this.master);
       this.master = -1;
     }
     // Best-effort: tear down the attach client. The tmux *session* it was
