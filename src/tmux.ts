@@ -1,0 +1,752 @@
+// Map a live process to its tmux pane and inject input. Claude Code sessions
+// run inside tmux panes; we discover the `claude` pid via pgrep/proc, walk up
+// its parent chain to the pane's top process, and `send-keys` into that pane.
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+
+// Known-good Claude model alias to launch with when a caller doesn't specify
+// one. Never launch a managed `claude` bare — see spawnManagedSession. Opus is
+// the current most-capable widely-available model and the alias the `/model`
+// command and lfg's picker both accept.
+export const DEFAULT_MODEL = "opus";
+
+// claude shows a blocking "Is this a project you trust?" dialog the first time
+// it opens an untrusted cwd. It is NOT bypassed by --dangerously-skip-permissions
+// and it renders BEFORE the TUI starts — so a spawned session hangs on it and
+// never writes its pidfile, which means listSessions() can't resolve it and it
+// silently never appears in the session list. Pre-accept trust for `cwd` in
+// ~/.claude.json so the dialog never fires. Idempotent: a no-op once trusted.
+export function ensureFolderTrusted(cwd: string): void {
+  try {
+    const cfgPath = `${homedir()}/.claude.json`;
+    if (!existsSync(cfgPath)) return;
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+    cfg.projects ??= {};
+    const p = cfg.projects[cwd] ?? {};
+    if (p.hasTrustDialogAccepted === true) return; // already trusted
+    p.hasTrustDialogAccepted = true;
+    p.hasCompletedProjectOnboarding = true;
+    if (!p.projectOnboardingSeenCount) p.projectOnboardingSeenCount = 1;
+    cfg.projects[cwd] = p;
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  } catch {
+    // best-effort — if we can't patch the config the worst case is the old hang
+  }
+}
+
+// Resolve the `claude` executable to an absolute path. We must NOT rely on a
+// bare `claude` in the spawn: when lfg runs as a systemd service its PATH
+// often lacks ~/.local/bin, so `tmux new-session … claude` can't exec claude
+// and the session dies on the spot (looks like "can't create a session"). Bun
+// .which() honours the current PATH; fall back to the known install locations.
+let _claudeBin: string | null = null;
+export function claudeBin(): string {
+  if (_claudeBin) return _claudeBin;
+  const onPath = Bun.which("claude");
+  if (onPath) return (_claudeBin = onPath);
+  const home = process.env.HOME ?? homedir();
+  for (const p of [
+    `${home}/.local/bin/claude`,
+    `${home}/.bun/bin/claude`,
+    "/usr/local/bin/claude",
+  ]) {
+    if (existsSync(p)) return (_claudeBin = p);
+  }
+  return (_claudeBin = "claude"); // last resort: let the failure surface
+}
+
+let _codexBin: string | null = null;
+export function codexBin(): string {
+  if (_codexBin) return _codexBin;
+  const onPath = Bun.which("codex");
+  if (onPath) return (_codexBin = onPath);
+  const home = process.env.HOME ?? homedir();
+  for (const p of [
+    `${home}/.local/bin/codex`,
+    `${home}/.bun/bin/codex`,
+    "/usr/local/bin/codex",
+  ]) {
+    if (existsSync(p)) return (_codexBin = p);
+  }
+  return (_codexBin = "codex");
+}
+
+// Spawned agents run with cwd set to one repo, but Claude Code scopes tool
+// access to the cwd tree — which sandboxes the agent to that single repo. The
+// agents are trusted operators of this whole box, so grant tool access to the
+// repos root (every repo under LFG_REPOS_ROOT) via --add-dir. Override the root
+// with LFG_REPOS_ROOT if the repos live elsewhere.
+function reposRoot(): string {
+  return process.env.LFG_REPOS_ROOT ?? `${homedir()}/repos`;
+}
+
+function paneMap(): Map<number, string> {
+  const m = new Map<number, string>();
+  try {
+    const r = Bun.spawnSync([
+      "tmux",
+      "list-panes",
+      "-a",
+      "-F",
+      "#{pane_pid} #{session_name}:#{window_index}.#{pane_index}",
+    ]);
+    const out = new TextDecoder().decode(r.stdout);
+    for (const line of out.split("\n")) {
+      const sp = line.indexOf(" ");
+      if (sp < 0) continue;
+      const pid = Number(line.slice(0, sp));
+      const target = line.slice(sp + 1).trim();
+      if (pid && target) m.set(pid, target);
+    }
+  } catch {}
+  return m;
+}
+
+function ppidOf(pid: number): number | null {
+  try {
+    // /proc/<pid>/stat: "pid (comm) state ppid ..." — comm can contain spaces
+    // and parens, so split after the last ')'.
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const rparen = stat.lastIndexOf(")");
+    const rest = stat.slice(rparen + 2).split(" ");
+    const ppid = Number(rest[1]);
+    return Number.isFinite(ppid) ? ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+export function tmuxTargetForPid(pid: number | null): string | null {
+  if (!pid) return null;
+  const panes = paneMap();
+  let cur: number | null = pid;
+  for (let i = 0; i < 12 && cur && cur > 1; i++) {
+    if (panes.has(cur)) return panes.get(cur) as string;
+    cur = ppidOf(cur);
+  }
+  return null;
+}
+
+export function tmuxHasSession(name: string): boolean {
+  try {
+    return Bun.spawnSync(["tmux", "has-session", "-t", `=${name}`]).exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+// Close a Claude session by killing its pane. The `claude` process gets a
+// SIGHUP and exits, so the session drops out of the list on the next poll. We
+// kill the pane (not the whole tmux session) so any other panes the user has
+// in that session survive.
+export function tmuxKillPane(target: string): boolean {
+  try {
+    return Bun.spawnSync(["tmux", "kill-pane", "-t", target]).exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+// Tear down a whole tmux session by name — the clean teardown for a session
+// lfg started itself (one session == one managed claude, no sibling panes to
+// preserve, unlike tmuxKillPane).
+export function tmuxKillSession(name: string): boolean {
+  try {
+    return Bun.spawnSync(["tmux", "kill-session", "-t", `=${name}`]).exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+// pane_pid of a session's first pane. When the session was created with a
+// command (no shell wrapper) this is the command's pid directly.
+export function panePidForSession(name: string): number | null {
+  try {
+    const r = Bun.spawnSync([
+      "tmux",
+      "list-panes",
+      "-t",
+      `=${name}`,
+      "-F",
+      "#{pane_pid}",
+    ]);
+    if (r.exitCode !== 0) return null;
+    const pid = Number(new TextDecoder().decode(r.stdout).split("\n")[0]?.trim());
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+// Launch an interactive `claude` in a fresh detached tmux session so the rest
+// of lfg (session list, prompt detection, send/answer) can drive it. The
+// initial instruction is passed as claude's positional prompt arg (after a `--`
+// so the variadic --add-dir doesn't eat it), which the TUI auto-submits on
+// boot — robust, unlike send-keys which races the splash screen and silently
+// drops keys on a cold start. The instruction points at a brief file rather
+// than inlining a huge prompt.
+export function spawnAgentSession(opts: {
+  name: string;
+  cwd: string;
+  briefPath: string;
+}): { ok: boolean; error?: string } {
+  const dec = new TextDecoder();
+  ensureFolderTrusted(opts.cwd);
+  const create = Bun.spawnSync([
+    "tmux",
+    "new-session",
+    "-d",
+    "-s",
+    opts.name,
+    "-c",
+    opts.cwd,
+    claudeBin(),
+    "--dangerously-skip-permissions",
+    "--add-dir",
+    reposRoot(),
+    // `--` terminates option parsing: --add-dir is variadic and otherwise
+    // greedily swallows the positional prompt as a second directory, leaving
+    // the TUI at an empty composer (the brief never gets submitted).
+    "--",
+    `Read the task brief at ${opts.briefPath} and carry it out end-to-end.`,
+  ]);
+  if (create.exitCode !== 0)
+    return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
+  return { ok: true };
+}
+
+// Start an interactive `claude` in a fresh detached tmux session that lfg
+// owns and drives. Like spawnAgentSession but for a user-initiated session: the
+// first prompt is optional (omit it to land at an empty composer). The caller
+// resolves the new sessionId from panePidForSession(name) once claude writes
+// its pidfile.
+export function spawnManagedSession(opts: {
+  name: string;
+  cwd: string;
+  prompt?: string;
+  model?: string;
+  // When set, resume the on-disk transcript with this sessionId (`claude
+  // --resume <id>`) instead of starting a fresh conversation — the way lfg
+  // brings a closed/dead session back after the box (and its tmux server +
+  // claude procs) was rebooted. Claude continues the conversation into a NEW
+  // sessionId/transcript, so the caller resolves the live id from the pidfile
+  // afterwards (same as a fresh spawn). The full prior history is preserved.
+  resume?: string;
+}): { ok: boolean; error?: string } {
+  const dec = new TextDecoder();
+  ensureFolderTrusted(opts.cwd);
+  const argv = ["tmux", "new-session", "-d", "-s", opts.name, "-c", opts.cwd,
+    claudeBin(), "--dangerously-skip-permissions", "--add-dir", reposRoot()];
+  // Resume the prior conversation when asked. Placed before --model so the flags
+  // read like relaunchSessionWithModel's argv; order is irrelevant to claude.
+  if (opts.resume && opts.resume.trim()) argv.push("--resume", opts.resume.trim());
+  // ALWAYS pin a model. A bare `claude` inherits Claude Code's saved global
+  // default, which can silently rot — when Anthropic retires/disables that
+  // model (e.g. the Fable off-switch), every inheriting session boots straight
+  // into "model unavailable" and freezes, replaying the error on every turn.
+  // An explicit --model is the only thing that overrides it. DEFAULT_MODEL is a
+  // known-good fallback when the caller didn't pick one.
+  argv.push("--model", opts.model || DEFAULT_MODEL);
+  // `--` terminates option parsing so the variadic --add-dir can't swallow the
+  // positional prompt as a second directory (which strands the new session at
+  // an empty composer — the first message never gets submitted).
+  if (opts.prompt && opts.prompt.trim()) argv.push("--", opts.prompt);
+  const create = Bun.spawnSync(argv);
+  if (create.exitCode !== 0)
+    return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
+  return { ok: true };
+}
+
+// Switch a running Claude session's model by RELAUNCHING its pane on the new
+// model, resuming the same transcript (`--resume <id>`). This is the heavy
+// hammer for a session whose model became invalid mid-flight: when the launch
+// model is unavailable, Claude Code rejects every turn *before* it processes an
+// injected `/model` slash command, so the in-place switch (see serve's /model
+// endpoint) silently no-ops ("Kept model as <dead model>"). A fresh process
+// with an explicit --model is the only thing that takes. `--resume` preserves
+// the full conversation, so the build picks up where it froze. respawn-pane
+// keeps the same tmux pane/name, so the managed registry and live view stay
+// bound. No prompt is re-submitted — it lands at the composer, ready to go.
+export function relaunchSessionWithModel(opts: {
+  tmuxTarget: string;
+  cwd: string;
+  sessionId: string;
+  model: string;
+}): { ok: boolean; error?: string } {
+  const dec = new TextDecoder();
+  ensureFolderTrusted(opts.cwd);
+  const r = Bun.spawnSync([
+    "tmux", "respawn-pane", "-k", "-c", opts.cwd, "-t", opts.tmuxTarget,
+    claudeBin(), "--dangerously-skip-permissions", "--add-dir", reposRoot(),
+    "--resume", opts.sessionId, "--model", opts.model,
+  ]);
+  if (r.exitCode !== 0)
+    return { ok: false, error: dec.decode(r.stderr) || "respawn-pane failed" };
+  return { ok: true };
+}
+
+export function spawnManagedCodexSession(opts: {
+  name: string;
+  cwd: string;
+  prompt?: string;
+  model?: string;
+}): { ok: boolean; error?: string } {
+  const dec = new TextDecoder();
+  const argv = [
+    "tmux",
+    "new-session",
+    "-d",
+    "-s",
+    opts.name,
+    "-c",
+    opts.cwd,
+    codexBin(),
+    "--cd",
+    opts.cwd,
+    "--sandbox",
+    "danger-full-access",
+    "--ask-for-approval",
+    "never",
+    "--add-dir",
+    reposRoot(),
+  ];
+  if (opts.model) argv.push("--model", opts.model);
+  if (opts.prompt && opts.prompt.trim()) argv.push("--", opts.prompt);
+  const create = Bun.spawnSync(argv);
+  if (create.exitCode !== 0)
+    return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
+  return { ok: true };
+}
+
+// Spawn a headless "aisdk" session: the lfg `aisdk-session` harness, supervised
+// by a tmux session. The pane is only a lifecycle handle (survives serve restarts
+// + reuses tmuxKillSession teardown) — I/O happens via the registry/command files
+// and the transcript, not the pane. We run it with the same bun runtime that's
+// running serve, pointed at this repo's cli.ts.
+export function spawnManagedAisdkSession(opts: {
+  name: string;
+  cwd: string;
+  prompt?: string;
+  model: string;
+  sessionId: string;
+}): { ok: boolean; error?: string } {
+  const dec = new TextDecoder();
+  // The provider drives the bundled claude binary, which still honors the trust
+  // dialog — pre-accept it so the first turn doesn't hang.
+  ensureFolderTrusted(opts.cwd);
+  // Spawn the harness module directly (not via the lfg CLI) so it has no
+  // dependency on the rest of the command surface.
+  const harnessPath = `${import.meta.dir}/agents/backends/aisdk-session.ts`;
+  const argv = [
+    "tmux", "new-session", "-d", "-s", opts.name, "-c", opts.cwd,
+    process.execPath, harnessPath,
+    "--session", opts.sessionId,
+    "--model", opts.model,
+    "--cwd", opts.cwd,
+    "--tmux", opts.name,
+  ];
+  if (opts.prompt && opts.prompt.trim()) argv.push("--", opts.prompt);
+  const create = Bun.spawnSync(argv);
+  if (create.exitCode !== 0)
+    return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
+  return { ok: true };
+}
+
+// Spawn a headless "codex-aisdk" session: the lfg codex-aisdk-session harness,
+// supervised by a tmux session. Mirrors spawnManagedAisdkSession exactly except
+// it points at the codex harness and passes the control-plane KEY (--key) rather
+// than a deterministic --session id — codex assigns its thread id only after the
+// first turn, so the key is all we know up front (see the harness header).
+export function spawnManagedCodexAisdkSession(opts: {
+  name: string;
+  cwd: string;
+  prompt?: string;
+  model: string;
+  key: string;
+}): { ok: boolean; error?: string } {
+  const dec = new TextDecoder();
+  // Harmless for codex: ensureFolderTrusted only patches ~/.claude.json and is a
+  // no-op when that file (or the project entry) is absent. Codex doesn't gate on
+  // it, but keeping it costs nothing and keeps this in lockstep with the Claude
+  // spawn helper.
+  ensureFolderTrusted(opts.cwd);
+  // Spawn the harness module directly (not via the lfg CLI) so it has no
+  // dependency on the rest of the command surface.
+  const harnessPath = `${import.meta.dir}/agents/backends/codex-aisdk-session.ts`;
+  const argv = [
+    "tmux", "new-session", "-d", "-s", opts.name, "-c", opts.cwd,
+    process.execPath, harnessPath,
+    "--key", opts.key,
+    "--model", opts.model,
+    "--cwd", opts.cwd,
+    "--tmux", opts.name,
+  ];
+  if (opts.prompt && opts.prompt.trim()) argv.push("--", opts.prompt);
+  const create = Bun.spawnSync(argv);
+  if (create.exitCode !== 0)
+    return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
+  return { ok: true };
+}
+
+// Spawn a headless "opencode" session: the lfg opencode-aisdk-session harness,
+// supervised by a tmux session. Mirrors spawnManagedCodexAisdkSession exactly
+// except it points at the opencode harness. Like codex-aisdk it passes a
+// control-plane KEY (--key) — but for opencode the key is ALSO the transcript id
+// (the harness owns the transcript file it writes), so serve can treat the
+// returned sessionId as == key (see the harness header).
+export function spawnManagedOpencodeAisdkSession(opts: {
+  name: string;
+  cwd: string;
+  prompt?: string;
+  model: string;
+  key: string;
+}): { ok: boolean; error?: string } {
+  const dec = new TextDecoder();
+  // Harmless for opencode: ensureFolderTrusted only patches ~/.claude.json and
+  // is a no-op when that file (or the project entry) is absent. Kept in lockstep
+  // with the other AI-SDK spawn helpers.
+  ensureFolderTrusted(opts.cwd);
+  // Spawn the harness module directly (not via the lfg CLI) so it has no
+  // dependency on the rest of the command surface.
+  const harnessPath = `${import.meta.dir}/agents/backends/opencode-aisdk-session.ts`;
+  const argv = [
+    "tmux", "new-session", "-d", "-s", opts.name, "-c", opts.cwd,
+    process.execPath, harnessPath,
+    "--key", opts.key,
+    "--model", opts.model,
+    "--cwd", opts.cwd,
+    "--tmux", opts.name,
+  ];
+  if (opts.prompt && opts.prompt.trim()) argv.push("--", opts.prompt);
+  const create = Bun.spawnSync(argv);
+  if (create.exitCode !== 0)
+    return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
+  return { ok: true };
+}
+
+// Codex 0.135 can show an update selector before the composer, which strands a
+// dashboard-spawned pane until someone manually presses "Skip". Dismiss only
+// that exact startup prompt; normal permission/question selectors are left for
+// the dashboard's prompt-answer flow.
+export function dismissCodexUpdatePrompt(target: string): boolean {
+  const pane = capturePane(target);
+  if (!pane || !/Update available!/i.test(pane) || !/\b2\.\s+Skip\b/.test(pane))
+    return false;
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", "2"]);
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"]);
+  return true;
+}
+
+export function capturePane(target: string): string | null {
+  try {
+    const r = Bun.spawnSync(["tmux", "capture-pane", "-t", target, "-p"]);
+    if (r.exitCode !== 0) return null;
+    return new TextDecoder().decode(r.stdout);
+  } catch {
+    return null;
+  }
+}
+
+// Capture a pane (no line-join) with some scrollback. We deliberately do NOT
+// pass -J: long URLs are often broken by the app's own hard wrap, not tmux
+// auto-wrap, so -J can't rejoin them — link reconstruction handles the joining
+// itself (see src/links.ts) and needs the rows kept separate.
+export function capturePaneScroll(target: string, scrollback = 200): string | null {
+  try {
+    const r = Bun.spawnSync([
+      "tmux", "capture-pane", "-t", target, "-p", "-S", `-${scrollback}`,
+    ]);
+    if (r.exitCode !== 0) return null;
+    return new TextDecoder().decode(r.stdout);
+  } catch {
+    return null;
+  }
+}
+
+// Same, but with escape sequences preserved (-e) so OSC 8 hyperlink targets
+// survive — those carry the full URL regardless of how it visually wraps.
+export function capturePaneEscaped(target: string, scrollback = 200): string | null {
+  try {
+    const r = Bun.spawnSync([
+      "tmux", "capture-pane", "-t", target, "-p", "-e", "-S", `-${scrollback}`,
+    ]);
+    if (r.exitCode !== 0) return null;
+    return new TextDecoder().decode(r.stdout);
+  } catch {
+    return null;
+  }
+}
+
+// A pane's current column count — the wrap width link reconstruction joins on.
+export function paneWidth(target: string): number | null {
+  try {
+    const r = Bun.spawnSync([
+      "tmux", "display-message", "-p", "-t", target, "#{pane_width}",
+    ]);
+    if (r.exitCode !== 0) return null;
+    const n = Number(new TextDecoder().decode(r.stdout).trim());
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+export type PromptOption = { index: number; label: string; selected: boolean };
+export type PanePrompt = { question: string; options: PromptOption[] };
+
+// Detect a Claude Code interactive selector in a pane capture (permission /
+// plan-approval / trust dialogs AND AskUserQuestion). They render as numbered
+// options with a "❯" cursor on the active one — the cursor is what tells a live
+// prompt apart from a static numbered list in the transcript above.
+//
+// Permission prompts pack options on adjacent lines; AskUserQuestion puts a
+// wrapped, indented description under each option (so the numbered lines are
+// NOT contiguous). We therefore don't require contiguity — we gather every
+// numbered line and group by consecutive numbering (a reset to a lower number
+// starts a new group), then pick the bottom-most group whose active option
+// carries the cursor.
+const OPT_RE = /^\s*(❯|›)?\s*(\d+)\.\s+(\S.*?)\s*$/;
+
+export function parsePrompt(pane: string): PanePrompt | null {
+  const lines = pane.replace(/\s+$/, "").split("\n");
+  type Hit = { line: number; index: number; label: string; selected: boolean };
+  const hits: Hit[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(OPT_RE);
+    if (!m) continue;
+    hits.push({ line: i, index: Number(m[2]), label: m[3].trim(), selected: !!m[1] });
+  }
+  if (!hits.length) return null;
+  // Split into runs where the option number increments by exactly 1.
+  const groups: Hit[][] = [];
+  for (const h of hits) {
+    const g = groups[groups.length - 1];
+    if (g && h.index === g[g.length - 1].index + 1) g.push(h);
+    else groups.push([h]);
+  }
+  let group: Hit[] | null = null;
+  for (let i = groups.length - 1; i >= 0; i--) {
+    if (groups[i].length >= 2 && groups[i].some((h) => h.selected)) {
+      group = groups[i];
+      break;
+    }
+  }
+  if (!group) return null;
+  const options: PromptOption[] = group.map((h) => ({
+    index: h.index,
+    label: h.label,
+    selected: h.selected,
+  }));
+  // Question = nearest meaningful line above the first option. Skip blank
+  // lines, separators, and the AskUserQuestion multi-question nav bar
+  // (e.g. "←  ☐ Multi-box future  ☐ Durability  ✔ Submit  →").
+  let question = "";
+  const start = group[0].line;
+  for (let i = start - 1; i >= 0 && i >= start - 6; i--) {
+    const t = lines[i].trim();
+    if (!t || /^[╌─_=-]+$/.test(t)) continue;
+    if (t.startsWith("←") || /✔\s*Submit/.test(t)) continue;
+    question = t;
+    break;
+  }
+  return { question, options };
+}
+
+// True when an AskUserQuestion selector is open in the pane, even when its
+// option layout is unparseable (preview / multi-select). Keys off the stable
+// footer the question dialog renders ("Enter to select · ↑/↓ to navigate · …
+// Esc to cancel") — distinct from the composer and from permission prompts.
+// Used to gate the number-key answer fallback so a stray keystroke can't land
+// in the composer when no selector is up.
+export function questionSelectorOpen(pane: string): boolean {
+  return /Enter to select/i.test(pane) && /to navigate/i.test(pane);
+}
+
+// Claude is mid-turn when the TUI pins its live spinner meter just above the
+// composer, e.g. "✢ Cerebrating… (2m 34s · ↓ 9.7k tokens)". That meter is
+// present for the whole turn (the verb is random, but the "(<elapsed> · …
+// tokens)" shape is stable), and a finished turn collapses it to a past-tense
+// summary with no parens ("✻ Baked for 18m 45s"). We previously relied solely
+// on the "esc to interrupt" footer hint, but that footer rotates through other
+// hints mid-turn ("← for agents", "PR #96", tips…), so the hint blinks in and
+// out and the busy state flickered. Match the meter as the primary signal and
+// keep the hint as a fallback (covers the first frame before tokens render).
+const BUSY_METER = /\(\d+m?\s?\d*s\b[^)]*\btokens?\b/i;
+export function isBusy(pane: string): boolean {
+  return BUSY_METER.test(pane) || /esc to interrupt/i.test(pane);
+}
+
+// Claude Code occasionally floats a session-rating overlay just above the
+// composer: a single line like "  1: Bad   2: Fine   3: Good   0: Dismiss".
+// It captures Enter and number keys, but it renders as `N: label` (colon, all
+// on one line) — NOT the `❯ N. label` newline-separated shape parsePrompt
+// matches — so the send queue can't see it. A send then types into the
+// composer fine but the Enter is swallowed by the overlay, stranding the
+// message ("never left the input box after retries"). Match the distinctive
+// options line directly so the sender can dismiss it first.
+export function feedbackPromptOpen(pane: string): boolean {
+  return pane
+    .split("\n")
+    .some((l) => /\b0:\s*Dismiss\b/.test(l) && /\b(Bad|Fine|Good)\b/.test(l));
+}
+
+// Dismiss the rating overlay by selecting its "0: Dismiss" option (a single
+// keystroke, no Enter). Harmless — the rating is optional — and it returns
+// keyboard focus to the composer so the queued message can submit.
+export function tmuxDismissFeedback(target: string): void {
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", "0"]);
+}
+
+// Answer an active selector by arrowing the cursor to the target option, then
+// Enter. Arrow nav is reliable in this modal state where literal text is not.
+export async function answerPrompt(
+  target: string,
+  index: number,
+): Promise<{ ok: boolean; error?: string }> {
+  const pane = capturePane(target);
+  const p = pane ? parsePrompt(pane) : null;
+  if (!p) {
+    // The pane parser couldn't read a selector, but an AskUserQuestion with an
+    // option preview (or a multi-select/wrapped layout) still has one open — it
+    // just renders a side-by-side box the scraper can't follow, and the prompt
+    // was surfaced from the transcript instead (see pendingToolPrompt). Answer
+    // it by pressing the option's number directly: single-key selection doesn't
+    // need to know the current cursor position, so it works where arrow-nav
+    // (which depends on parsing the cursor) can't. 1–9 only — every real
+    // AskUserQuestion has ≤4 options.
+    if (pane && questionSelectorOpen(pane) && index >= 1 && index <= 9) {
+      Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", String(index)]);
+      await Bun.sleep(120);
+      const r = Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"]);
+      if (r.exitCode !== 0)
+        return { ok: false, error: new TextDecoder().decode(r.stderr) || "Enter failed" };
+      return { ok: true };
+    }
+    return { ok: false, error: "no active prompt in pane" };
+  }
+  const order = p.options.map((o) => o.index);
+  const cur = p.options.find((o) => o.selected)?.index ?? order[0];
+  const ci = order.indexOf(cur);
+  const ti = order.indexOf(index);
+  if (ti < 0) return { ok: false, error: "option not found" };
+  const delta = ti - ci;
+  const key = delta > 0 ? "Down" : "Up";
+  for (let i = 0; i < Math.abs(delta); i++) {
+    Bun.spawnSync(["tmux", "send-keys", "-t", target, key]);
+    await Bun.sleep(60);
+  }
+  await Bun.sleep(120);
+  const r = Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"]);
+  if (r.exitCode !== 0)
+    return { ok: false, error: new TextDecoder().decode(r.stderr) || "Enter failed" };
+  return { ok: true };
+}
+
+// Dismiss an open interactive selector (AskUserQuestion / permission / plan) by
+// sending Escape — Claude cancels the selector and returns to the composer (for
+// AskUserQuestion it records that the user declined to answer). Guarded on a live
+// prompt so a stray call can't interrupt a running turn or, on an idle composer,
+// trip the second-Escape rewind-history overlay.
+//
+// A *single* Escape is unreliable: the TUI's input parser can't tell a lone ESC
+// from the start of an escape sequence (arrow keys arrive as `ESC [ A`), so the
+// byte can sit buffered until the next keystroke flushes it — one send-keys then
+// silently does nothing (the observed "X button doesn't dismiss" bug). So we
+// re-send, re-checking the pane each round and stopping the instant the selector
+// clears. Because we only fire again while the prompt is STILL up, we never land
+// a second Escape on the composer (which would open the rewind-history overlay).
+export async function dismissPrompt(
+  target: string,
+): Promise<{ ok: boolean; error?: string }> {
+  let pane = capturePane(target);
+  if (!pane || !parsePrompt(pane)) return { ok: false, error: "no active prompt in pane" };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = Bun.spawnSync(["tmux", "send-keys", "-t", target, "Escape"]);
+    if (r.exitCode !== 0)
+      return { ok: false, error: new TextDecoder().decode(r.stderr) || "Escape failed" };
+    // Poll a few times before re-sending: the parser may register the lone ESC
+    // on its own disambiguation timeout, in which case one Escape is enough and
+    // we avoid leaving a stray buffered keystroke behind.
+    for (let i = 0; i < 6; i++) {
+      await Bun.sleep(150);
+      pane = capturePane(target);
+      if (!pane || !parsePrompt(pane)) return { ok: true };
+    }
+  }
+  return { ok: false, error: "prompt did not dismiss after repeated Escape" };
+}
+
+// ---- low-level keystroke primitives for the confirmed-send queue (sendq.ts).
+// Blind text+sleep+Enter loses messages (the fixed sleep races a busy TUI, a
+// dropped Enter leaves text stranded in the box). sendq drives these and reads
+// `inputBoxText` back to confirm each step landed.
+
+export function tmuxType(target: string, text: string): boolean {
+  return Bun.spawnSync(["tmux", "send-keys", "-t", target, "-l", text]).exitCode === 0;
+}
+
+export function tmuxEnter(target: string): boolean {
+  return Bun.spawnSync(["tmux", "send-keys", "-t", target, "Enter"]).exitCode === 0;
+}
+
+// Wipe the composer before a (re)type so we never fuse our message onto a
+// stranded draft. C-u alone (kill-to-start) usually does it, but it's been
+// observed to get swallowed once on a freshly-idle pane, leaving the draft —
+// and then tmuxType appends, submitting a garbled concatenation. Belt-and-
+// suspenders: C-u (kill before cursor) + C-a (jump to start) + C-k (kill after)
+// guarantees an empty line regardless of cursor position or a single dropped
+// key. All three are harmless no-ops on an already-empty box.
+export function tmuxClearInput(target: string): void {
+  Bun.spawnSync(["tmux", "send-keys", "-t", target, "C-u", "C-a", "C-k"]);
+}
+
+// A single Escape interrupts Claude's current turn (stops generation / aborts
+// the running tool). One press only — a second Esc opens the rewind history.
+export function tmuxInterrupt(target: string): boolean {
+  return Bun.spawnSync(["tmux", "send-keys", "-t", target, "Escape"]).exitCode === 0;
+}
+
+// The Claude Code composer renders as the bottom-most pair of `─` rule lines
+// with the input (a `❯`-prefixed line, possibly wrapped) between them. We return
+// that region verbatim; callers normalize + substring-match their own text, so
+// placeholder/ghost hint text in an empty box doesn't matter. Returns null when
+// no composer box is visible (e.g. a modal/selector is up instead).
+//
+// A *named* session draws its name centered in the top border
+// (`──── my-session ──`), so a rule line isn't always pure dashes — it just
+// starts and ends with a run of them. Matching only `^─{3,}\s*$` missed that
+// border, so the composer went undetected and every send to a named session
+// typed-then-cleared in a retry loop. Allow an embedded label between the
+// leading and trailing dash runs.
+const RULE_RE = /^─{3,}.*─\s*$/;
+
+export function inputBoxText(target: string): string | null {
+  const pane = capturePane(target);
+  if (pane == null) return null;
+  const lines = pane.split("\n");
+  let bottom = -1;
+  let top = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (RULE_RE.test(lines[i])) {
+      if (bottom < 0) bottom = i;
+      else {
+        top = i;
+        break;
+      }
+    }
+  }
+  if (bottom >= 0 && top >= 0) return lines.slice(top + 1, bottom).join("\n");
+
+  // Codex renders the composer as a single bottom prompt line:
+  //   › message text
+  // Ignore numbered selector rows (`› 1. ...`) so open prompts don't look like
+  // an editable composer to the send queue.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i].match(/^\s*›\s*(.*?)\s*$/);
+    if (!m) continue;
+    const text = m[1] ?? "";
+    if (/^\d+\.\s+/.test(text)) return null;
+    return text;
+  }
+  return null;
+}

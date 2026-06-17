@@ -1,0 +1,548 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* Streamdown ships Tailwind-classed markup; this lets Tailwind v4 discover and
+   generate the utility classes its rendered elements rely on. */
+@source "../node_modules/streamdown/dist/index.js";
+
+/* shadcn components gate dark styles on `&:is(.dark *)`; main.tsx toggles the
+   `.dark` class off the OS preference. */
+@custom-variant dark (&:is(.dark *));
+
+/* ── lfg iOS palette, mapped onto the semantic token names the shadcn
+   components consume. Redefining these tokens re-skins every copied component
+   to lfg's native iOS look without touching component source. Values lifted
+   from src/web/index.html's :root. ───────────────────────────────────────── */
+:root {
+  color-scheme: light;
+  --background: #f2f2f7;
+  --foreground: #000000;
+  --card: #ffffff;
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+  --primary: #007aff; /* iOS accent blue */
+  --primary-foreground: #ffffff;
+  --secondary: #f9f9fb;
+  --secondary-foreground: #000000;
+  --muted: #f9f9fb;
+  --muted-foreground: rgba(60, 60, 67, 0.6);
+  --accent: rgba(120, 120, 128, 0.12); /* chip surface */
+  --accent-foreground: #000000;
+  --destructive: #ff3b30;
+  --brand: #007aff;
+  --brand-foreground: #ffffff;
+  --success: #34c759;
+  --warning: #ff9500;
+  --info: #007aff;
+  --border: rgba(60, 60, 67, 0.12);
+  --input: rgba(60, 60, 67, 0.12);
+  --ring: #007aff;
+  --radius: 0.75rem;
+  --code-bg: rgba(120, 120, 128, 0.08);
+  --text-2: #3c3c43;
+  --border-strong: rgba(60, 60, 67, 0.29);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #000000;
+  --foreground: #ffffff;
+  --card: #1c1c1e;
+  --card-foreground: #ffffff;
+  --popover: #1c1c1e;
+  --popover-foreground: #ffffff;
+  --primary: #0a84ff;
+  --primary-foreground: #ffffff;
+  --secondary: #2c2c2e;
+  --secondary-foreground: #ffffff;
+  --muted: #2c2c2e;
+  --muted-foreground: rgba(235, 235, 245, 0.6);
+  --accent: rgba(118, 118, 128, 0.24);
+  --accent-foreground: #ffffff;
+  --destructive: #ff453a;
+  --brand: #0a84ff;
+  --brand-foreground: #ffffff;
+  --success: #30d158;
+  --warning: #ff9f0a;
+  --info: #0a84ff;
+  --border: rgba(84, 84, 88, 0.35);
+  --input: rgba(84, 84, 88, 0.35);
+  --ring: #0a84ff;
+  --code-bg: rgba(118, 118, 128, 0.16);
+  --text-2: rgba(235, 235, 245, 0.78);
+  --border-strong: rgba(84, 84, 88, 0.65);
+}
+
+@theme inline {
+  /* iOS emphasized curve — the components reference --ease-apple*; alias them
+     all to the single iOS curve lfg already uses. */
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-apple: var(--ease-ios);
+  --ease-apple-bounce: var(--ease-ios);
+  --ease-apple-spring: var(--ease-ios);
+  --ease-apple-out: var(--ease-ios);
+  --ease-apple-in-out: var(--ease-ios);
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter",
+    system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* The `brand` button variant uses bg-brand-gradient; replace the default coral
+   gradient with a flat iOS-blue fill so it reads as a native iOS CTA. */
+@utility bg-brand-gradient {
+  background-color: var(--brand);
+  color: var(--brand-foreground);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans antialiased overscroll-none;
+    height: 100dvh;
+    overflow: hidden;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-background text-foreground;
+    height: 100%;
+    overflow: hidden;
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* iOS Safari auto-zooms the viewport whenever a focused text-entry field has a
+     font-size < 16px. We deliberately use smaller text (text-sm, text-[13px]) on
+     many inputs/textareas, so pin every text-entry control to 16px on touch
+     devices. Scoped to (pointer: coarse) so the desktop layout is untouched, and
+     !important because Tailwind's text-* utilities otherwise win. Native <select>
+     is excluded — it opens a picker, not a keyboard, so it never triggers zoom —
+     as are non-text input types (checkbox/radio/range/button/etc.). */
+  @media (pointer: coarse) {
+    textarea,
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not(
+        [type="button"]
+      ):not([type="submit"]):not([type="reset"]):not([type="file"]):not(
+        [type="color"]
+      ) {
+      font-size: 16px !important;
+    }
+  }
+}
+
+@layer components {
+  .markdown {
+    color: var(--foreground);
+    font-size: 14.5px;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .markdown h1,
+  .markdown h2,
+  .markdown h3 {
+    line-height: 1.25;
+    letter-spacing: 0;
+    font-weight: 700;
+  }
+
+  .markdown h1 {
+    font-size: 19px;
+    margin: 1em 0 0.4em;
+  }
+
+  .markdown h2 {
+    font-size: 16.5px;
+    margin: 1em 0 0.35em;
+    padding-bottom: 3px;
+    border-bottom: 0.5px solid var(--border);
+  }
+
+  .markdown h3 {
+    font-size: 15px;
+    margin: 0.85em 0 0.3em;
+  }
+
+  .markdown h1:first-child,
+  .markdown h2:first-child,
+  .markdown h3:first-child {
+    margin-top: 0;
+  }
+
+  .markdown p {
+    margin: 0.5em 0;
+  }
+
+  .markdown p:first-child {
+    margin-top: 0;
+  }
+
+  .markdown p:last-child {
+    margin-bottom: 0;
+  }
+
+  .markdown ul,
+  .markdown ol {
+    margin: 0.45em 0;
+    padding-left: 20px;
+  }
+
+  .markdown ul {
+    list-style: disc;
+  }
+
+  .markdown ol {
+    list-style: decimal;
+  }
+
+  .markdown li {
+    margin: 0.2em 0;
+  }
+
+  .markdown code {
+    border-radius: 4px;
+    background: var(--code-bg);
+    padding: 1px 6px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.88em;
+  }
+
+  .markdown pre {
+    margin: 0.6em 0;
+    overflow-x: auto;
+    border-radius: 8px;
+    background: var(--code-bg);
+    padding: 10px 12px;
+    font-size: 12.5px;
+  }
+
+  .markdown pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  .markdown a {
+    color: var(--primary);
+    text-decoration: none;
+  }
+
+  .markdown a:active {
+    opacity: 0.6;
+  }
+
+  .markdown blockquote {
+    margin: 0.6em 0;
+    border-left: 3px solid var(--border-strong);
+    padding: 0.15em 12px;
+    color: var(--text-2);
+  }
+
+  .markdown strong {
+    font-weight: 600;
+  }
+
+  .markdown hr {
+    margin: 1.2em 0;
+    border: none;
+    border-top: 0.5px solid var(--border);
+  }
+
+  .markdown table {
+    width: 100%;
+    margin: 0.6em 0;
+    border-collapse: collapse;
+    font-size: 0.9em;
+  }
+
+  .markdown th,
+  .markdown td {
+    border-top: 0.5px solid var(--border);
+    padding: 5px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown th {
+    font-weight: 650;
+    color: var(--foreground);
+  }
+
+  .report-markdown {
+    box-shadow: 0 1px 0 var(--border), 0 6px 16px -8px rgba(0, 0, 0, 0.08);
+  }
+
+  /* Wide report tables scroll inside their own region instead of forcing the
+     whole page to scroll horizontally on mobile. */
+  .report-markdown .table-wrap {
+    margin: 0.6em 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 8px;
+  }
+
+  .report-markdown .table-wrap table {
+    margin: 0;
+    /* Fill the card when narrow enough; grow + scroll when it can't fit. */
+    width: max-content;
+    min-width: 100%;
+  }
+
+  /* On phones, let the prose action/code blocks wrap rather than open a tiny
+     horizontal scroll strip — report fences are directives, not exact code. */
+  @media (max-width: 640px) {
+    .report-markdown pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  .msg-text {
+    white-space: pre-wrap;
+    /* Break long unbreakable tokens (URLs, paths, hashes) so a message can't
+       overflow its bubble and force horizontal scroll on mobile. */
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .msg-text.markdown {
+    white-space: normal;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  .msg-text.markdown h1,
+  .msg-text.markdown h2,
+  .msg-text.markdown h3 {
+    margin: 0.5em 0 0.3em;
+    border: none;
+    padding: 0;
+    font-size: 14px;
+  }
+
+  .msg-text.markdown p {
+    margin: 0.4em 0;
+  }
+
+  .msg-text.markdown ul,
+  .msg-text.markdown ol {
+    margin: 0.4em 0;
+    padding-left: 18px;
+  }
+
+  .msg-text.markdown li {
+    margin: 0.15em 0;
+  }
+
+  .msg-text.markdown pre {
+    margin: 0.5em 0;
+    font-size: 11px;
+  }
+
+  .msg-text.markdown hr {
+    margin: 0.8em 0;
+  }
+
+  .live-pane {
+    box-shadow: 0 1px 0 var(--border), 0 8px 22px -14px rgba(0, 0, 0, 0.2);
+    /* The collapse/expand tween animates height (non-composited). Containing
+       layout + paint keeps the dirty region scoped to this card so the heavy
+       transcript subtree isn't re-laid-out every frame. */
+    contain: layout paint;
+  }
+
+  .chat-stream {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .user-bubble.markdown,
+  .user-bubble.markdown a {
+    color: var(--primary-foreground);
+  }
+
+  .user-bubble.markdown code,
+  .user-bubble.markdown pre {
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  .think-live {
+    display: -webkit-box;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    background: linear-gradient(
+      100deg,
+      var(--muted-foreground) 30%,
+      var(--foreground) 50%,
+      var(--muted-foreground) 70%
+    );
+    background-size: 200% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    font-size: 12px;
+    line-height: 1.5;
+    animation: lfg-shimmer 1.4s linear infinite;
+  }
+
+  .busy-line {
+    display: flex;
+    align-items: center;
+    padding: 5px 0;
+  }
+
+  .busy-line .bt {
+    background: linear-gradient(
+      100deg,
+      var(--muted-foreground) 30%,
+      var(--foreground) 50%,
+      var(--muted-foreground) 70%
+    );
+    background-size: 200% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    font-size: 12px;
+    font-weight: 600;
+    animation: lfg-shimmer 1.4s linear infinite;
+  }
+
+  @keyframes lfg-shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  .tool-fold {
+    color: var(--muted-foreground);
+  }
+
+  .tool-fold > summary {
+    display: flex;
+    cursor: pointer;
+    list-style: none;
+    align-items: baseline;
+    gap: 7px;
+    overflow: hidden;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+  }
+
+  .tool-fold > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .tool-fold[open] > summary {
+    white-space: normal;
+  }
+
+  .tool-fold .msg-kind {
+    flex: none;
+    font-weight: 700;
+  }
+
+  .tool-fold .msg-kind.k-tool_use {
+    color: #c2740a;
+  }
+
+  .tool-fold .msg-kind.k-tool_result {
+    color: #1a7f37;
+  }
+
+  .dark .tool-fold .msg-kind.k-tool_use {
+    color: #ffd28a;
+  }
+
+  .dark .tool-fold .msg-kind.k-tool_result {
+    color: #a7e8bd;
+  }
+
+  .tool-fold .tool-body {
+    margin-top: 5px;
+    max-height: 18rem;
+    overflow: auto;
+    border-left: 1px solid var(--border);
+    padding-left: 10px;
+    color: var(--muted-foreground);
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  /* A run of adjacent tool calls collapses to one row labelled by its counts
+     (e.g. "2 Bash · 1 result"); expanding reveals each call as its own fold. */
+  .tool-group > summary .tg-count {
+    font-weight: 700;
+    color: var(--muted-foreground);
+  }
+
+  .tool-group > .tg-body {
+    margin-top: 6px;
+    padding-left: 10px;
+    border-left: 1px solid var(--border);
+  }
+
+  /* The live group (last one while the session is busy) shimmers its label. */
+  .tool-group--live > summary .tg-count {
+    background: linear-gradient(
+      90deg,
+      var(--muted-foreground) 0%,
+      var(--foreground) 50%,
+      var(--muted-foreground) 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    animation: lfg-shimmer 1.4s linear infinite;
+  }
+}

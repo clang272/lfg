@@ -1,0 +1,12 @@
+node_modules/
+web/node_modules/
+web/dist/
+data/
+.env
+.env.*
+!.env.example
+.creds.json
+*.db
+*.log
+.DS_Store
+dist/

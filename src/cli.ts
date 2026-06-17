@@ -1,0 +1,46 @@
+#!/usr/bin/env bun
+import { cmdServe } from "./commands/serve.ts";
+import { cmdAgents } from "./commands/agents.ts";
+import { cmdWhatsapp } from "./commands/whatsapp.ts";
+import { cmdSetup } from "./commands/setup.ts";
+
+const HELP = `lfg — run and manage your AI coding agents on your own box
+
+Usage:
+  lfg serve                        Run the web UI + control server (default :8766)
+  lfg agents [list|run|show]       Run / inspect insight agents (see 'agents help')
+  lfg whatsapp [run|sessions]      Run the optional WhatsApp control sidecar
+  lfg setup                        Provision this box (Bun, tmux, Tailscale, service)
+
+Env (read from process env / .env, see .env.example):
+  LFG_PORT, LFG_HOST, LFG_REPOS_ROOT
+`;
+
+async function main() {
+  const [cmd, ...rest] = process.argv.slice(2);
+  switch (cmd) {
+    case "serve":
+      return await cmdServe();
+    case "agents":
+      return await cmdAgents(rest);
+    case "whatsapp":
+      return await cmdWhatsapp(rest);
+    case "setup":
+      return await cmdSetup(rest);
+    case undefined:
+    case "help":
+    case "-h":
+    case "--help":
+      console.log(HELP);
+      return;
+    default:
+      console.error(`Unknown command: ${cmd}\n`);
+      console.log(HELP);
+      process.exit(1);
+  }
+}
+
+main().catch((e) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

@@ -1,0 +1,77 @@
+name: release
+
+# Builds a self-contained "bundled" release tarball and attaches it to a GitHub
+# Release. The tarball ships the source tree + a fully-resolved node_modules +
+# the prebuilt web UI, so end users never run `bun install` against the public
+# registry — which is the whole point: the AI-SDK ("vibes") provider lfg depends
+# on is NOT on the public npm registry, so it must be vendored into the artifact.
+#
+# Trigger: push a version tag (v1.2.3) or run manually from the Actions tab.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.1.0). Defaults to a dev build."
+        required: false
+
+permissions:
+  contents: write # create releases + upload assets
+
+jobs:
+  build:
+    runs-on: ubuntu-latest # linux x64 — matches the typical VPS target
+    env:
+      # `secrets` is not allowed in step `if:` — surface them as env first.
+      NPM_REGISTRY: ${{ secrets.NPM_REGISTRY }}
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Auth for the private registry that hosts the "vibes" AI-SDK provider.
+      # Set repo secrets NPM_REGISTRY (e.g. https://npm.your-registry.dev/) and
+      # NPM_TOKEN. If absent, this is a no-op and a public install is attempted.
+      - name: Configure private registry
+        if: ${{ env.NPM_TOKEN != '' }}
+        run: |
+          REG="${NPM_REGISTRY:-https://registry.npmjs.org/}"
+          HOST="${REG#*://}"; HOST="${HOST%%/*}"
+          {
+            echo "[install]"
+            echo "registry = \"$REG\""
+          } > "$HOME/.bunfig.toml"
+          # bun also reads npm-style token lines from .npmrc
+          echo "//$HOST/:_authToken=${NPM_TOKEN}" > "$HOME/.npmrc"
+
+      - name: Install dependencies (vendors the private provider)
+        run: bun install --frozen-lockfile
+
+      - name: Build the web UI
+        run: |
+          cd web
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Stage + pack the bundle
+        # Reuse the same staging/prune logic as local releases (single source of
+        # truth). Deps + web are already built above, so skip reinstalling.
+        run: SKIP_INSTALL=1 bash scripts/release.sh
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Stable asset name → /releases/latest/download/lfg-linux-x64.tar.gz
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            dist/lfg-linux-x64.tar.gz
+            dist/lfg-linux-x64.tar.gz.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true

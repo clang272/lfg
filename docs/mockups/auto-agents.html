@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>lfg · Auto agents — mockup</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<script>
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        colors: {
+          background: "var(--background)",
+          card: "var(--card)",
+          foreground: "var(--foreground)",
+          primary: "var(--primary)",
+          muted: "var(--muted)",
+          "muted-foreground": "var(--muted-foreground)",
+          border: "var(--border)",
+          success: "var(--success)",
+          warning: "var(--warning)",
+          destructive: "var(--destructive)",
+          brand: "var(--primary)",
+        },
+        transitionTimingFunction: { ios: "cubic-bezier(0.32,0.72,0,1)" },
+      },
+    },
+  };
+</script>
+<style>
+  :root {
+    --background: #f2f2f7; --card: #ffffff; --foreground: #1c1c1e;
+    --primary: #007aff; --muted: #f4f4f7; --muted-foreground: #8a8a8e;
+    --border: #d8d8dd; --success: #34c759; --warning: #ff9500; --destructive: #ff3b30;
+    --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .dark {
+    --background: #000000; --card: #1c1c1e; --foreground: #f2f2f7;
+    --primary: #0a84ff; --muted: #1c1c1e; --muted-foreground: #98989e;
+    --border: #2c2c2e; --success: #30d158; --warning: #ff9f0a; --destructive: #ff453a;
+  }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; font-size: 15px;
+  }
+  .live-pane { box-shadow: 0 1px 0 var(--border), 0 8px 22px -14px rgba(0,0,0,.35); }
+  @keyframes pop-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+  .pop-in { animation: pop-in .42s var(--ease-ios) both; }
+  @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .sheet-up { animation: sheet-up .34s var(--ease-ios) both; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(14px) scale(.96); } to { opacity: 1; transform: none; } }
+  .toast-in { animation: toast-in .38s var(--ease-ios) both; }
+  @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+  .scrollbar-none::-webkit-scrollbar { display: none; }
+  .scrollbar-none { scrollbar-width: none; }
+  [data-tab-panel] { display: none; }
+  [data-tab-panel].active { display: block; }
+</style>
+</head>
+<body class="bg-background text-foreground">
+<div class="mx-auto flex h-dvh max-w-md flex-col overflow-hidden">
+
+  <!-- Header (h-11) -->
+  <header class="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
+    <i data-lucide="terminal-square" class="h-5 w-5 text-primary"></i>
+    <span class="text-[15px] font-semibold tracking-tight">lfg</span>
+    <span id="header-sub" class="text-[12px] text-muted-foreground"></span>
+    <div class="ml-auto flex items-center gap-1">
+      <button onclick="toggleTheme()" class="rounded-full p-2 text-muted-foreground hover:text-foreground">
+        <i data-lucide="sun-moon" class="h-[18px] w-[18px]"></i>
+      </button>
+      <button class="rounded-full p-2 text-muted-foreground hover:text-foreground">
+        <i data-lucide="plus" class="h-[18px] w-[18px]"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main class="relative flex-1 overflow-y-auto px-3 pb-32 pt-3 scrollbar-none">
+
+    <!-- ============ LIVE TAB ============ -->
+    <div data-tab-panel="live" class="active flex flex-col gap-5">
+
+      <!-- Working -->
+      <section id="sec-working">
+        <div class="mb-2 flex items-center gap-2 px-1">
+          <span class="h-2 w-2 rounded-full bg-warning pulse-dot"></span>
+          <h2 class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Working</h2>
+          <span id="count-working" class="text-[12px] text-muted-foreground"></span>
+        </div>
+        <div id="grid-working" class="grid grid-cols-1 gap-3"></div>
+      </section>
+
+      <!-- Auto (the new category) -->
+      <section>
+        <div class="mb-2 flex items-center gap-2 px-1">
+          <span class="h-2 w-2 rounded-full bg-primary"></span>
+          <h2 class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Auto</h2>
+          <span id="count-auto" class="text-[12px] text-muted-foreground"></span>
+          <button onclick="switchTab('auto')" class="ml-auto text-[12px] font-medium text-primary">Manage</button>
+        </div>
+        <div id="grid-auto" class="grid grid-cols-1 gap-2.5"></div>
+      </section>
+
+      <!-- Idle -->
+      <section>
+        <div class="mb-2 flex items-center gap-2 px-1">
+          <span class="h-2 w-2 rounded-full bg-muted-foreground/50"></span>
+          <h2 class="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">Idle</h2>
+          <span id="count-idle" class="text-[12px] text-muted-foreground"></span>
+        </div>
+        <div id="grid-idle" class="grid grid-cols-1 gap-3"></div>
+      </section>
+    </div>
+
+    <!-- ============ AUTO MANAGE TAB ============ -->
+    <div data-tab-panel="auto" class="flex flex-col gap-3">
+      <div id="auto-list" class="flex flex-col gap-2.5"></div>
+      <button onclick="editAgent('__new')" class="mt-1 flex items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-3 text-[14px] font-medium text-muted-foreground hover:text-foreground">
+        <i data-lucide="plus" class="h-4 w-4"></i> New auto agent
+      </button>
+    </div>
+  </main>
+
+  <!-- ============ TOAST ============ -->
+  <div id="toast-zone" class="pointer-events-none fixed inset-x-0 bottom-[6.5rem] z-40 flex flex-col items-center gap-2 px-4"></div>
+
+  <!-- ============ BOTTOM NAV (pill) ============ -->
+  <div class="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center pb-[calc(0.875rem+env(safe-area-inset-bottom))]">
+    <div class="pointer-events-auto rounded-full bg-gradient-to-b from-white/70 via-white/25 to-white/10 p-px shadow-[0_8px_28px_rgba(0,0,0,0.18)] dark:from-white/25 dark:via-white/10 dark:to-white/5">
+      <nav class="relative flex items-center gap-1 rounded-full bg-background/85 p-1.5 backdrop-blur-xl">
+        <span id="nav-capsule" class="absolute inset-y-1.5 left-1.5 w-[4.5rem] rounded-full bg-primary/12 transition-transform duration-[260ms]"
+              style="transition-timing-function: var(--ease-ios);"></span>
+        <button onclick="switchTab('live')" data-nav="live"
+          class="relative flex w-[4.5rem] flex-col items-center gap-0.5 rounded-full px-4 py-1.5 transition-[color,transform] duration-200 ease-out">
+          <i data-lucide="radio" class="h-[18px] w-[18px]"></i>
+          <span class="text-[10.5px] font-medium tracking-[-0.01em]">Live</span>
+        </button>
+        <button onclick="switchTab('auto')" data-nav="auto"
+          class="relative flex w-[4.5rem] flex-col items-center gap-0.5 rounded-full px-4 py-1.5 transition-[color,transform] duration-200 ease-out">
+          <i data-lucide="calendar-clock" class="h-[18px] w-[18px]"></i>
+          <span class="text-[10.5px] font-medium tracking-[-0.01em]">Auto</span>
+        </button>
+      </nav>
+    </div>
+  </div>
+
+  <!-- ============ BOTTOM SHEET (message detail / editor) ============ -->
+  <div id="sheet-backdrop" class="fixed inset-0 z-50 hidden bg-black/40" onclick="closeSheet()"></div>
+  <div id="sheet" class="fixed inset-x-0 bottom-0 z-50 hidden max-h-[88dvh] overflow-y-auto rounded-t-3xl border-t border-border bg-card scrollbar-none"></div>
+
+</div>
+
+<script>
+// ---------- state ----------
+const sessions = {
+  working: [
+    { name: "publish-flow", model: "opus", msg: "Wiring the deploy button to the new endpoint…", busy: true },
+  ],
+  idle: [
+    { name: "scratch", model: "sonnet", msg: "Done. Pushed branch fix/empty-state.", busy: false },
+  ],
+};
+
+const agents = [
+  { id: "design-review", schedule: "daily · 11:00", enabled: true,
+    prompt: "You're the design reviewer. Scan your project's components for raw <button>s, inline hex, and duplicate cards. Flag the single highest-leverage issue. One line + reasoning.",
+    finding: { title: "Composer.tsx:42 renders a raw <button>", sev: "high", time: "11:00", unread: false,
+      reasoning: ["4th instance this week", "bypasses ui/button.tsx focus + disabled states", "inconsistent hover with the rest of the toolbar"],
+      suggest: "Swap to <Button variant=\"ghost\">." } },
+  { id: "security", schedule: "daily · 11:00", enabled: true,
+    prompt: "Audit the lfg server for unauthenticated mutating endpoints, secrets in source, and over-broad CORS. Surface the most serious finding only.",
+    finding: { title: "/api/jobs PUT has no auth check", sev: "high", time: "09:02", unread: false,
+      reasoning: ["serve.ts:577 writes job defs to disk", "reachable from the open network", "no token guard like the other mutating routes"],
+      suggest: "Add the same bearer-token guard used by /api/actions/execute." } },
+  { id: "db-insights", schedule: "nightly · 02:00", enabled: true,
+    prompt: "Look at slow query logs and the schema. Surface the single highest-impact missing index or N+1.",
+    finding: { title: "users missing index on (org_id, created_at)", sev: "med", time: "02:14", unread: false,
+      reasoning: ["1.2s sequential scan in 3 hot queries", "table is 480k rows and growing"],
+      suggest: "Add a composite btree index on (org_id, created_at)." } },
+  { id: "model-watch", schedule: "weekly · Mon 08:00", enabled: false,
+    prompt: "Watch for new frontier model launches and deprecations relevant to our stack. One line if something shipped, otherwise stay silent.",
+    finding: null },
+];
+
+let activeTab = "live";
+let sheetAgentId = null;
+
+// ---------- helpers ----------
+const sevColor = { high: "bg-destructive", med: "bg-warning", low: "bg-muted-foreground" };
+const sevText  = { high: "high", med: "med", low: "low" };
+const $ = (id) => document.getElementById(id);
+function icons() { window.lucide && lucide.createIcons(); }
+
+// ---------- render: live ----------
+function sessionCard(s) {
+  return `
+  <section class="live-pane pop-in flex flex-col rounded-2xl border border-border bg-card">
+    <div class="flex items-center gap-2 border-b border-border px-3 py-2.5">
+      <i data-lucide="${s.busy ? 'loader' : 'check'}" class="h-4 w-4 ${s.busy ? 'text-warning' : 'text-success'}"></i>
+      <span class="text-[14px] font-semibold">${s.name}</span>
+      <span class="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">${s.model}</span>
+      <span class="ml-auto h-2 w-2 rounded-full ${s.busy ? 'bg-warning pulse-dot' : 'bg-success'}"></span>
+    </div>
+    <div class="px-3 py-3 text-[13px] text-muted-foreground">
+      ${s.busy ? `<span class="text-foreground">${s.msg}</span>` : s.msg}
+    </div>
+  </section>`;
+}
+
+function autoCard(a) {
+  const f = a.finding;
+  if (!a.enabled) {
+    return `<button onclick="editAgent('${a.id}')" class="flex items-center gap-2.5 rounded-2xl border border-border bg-card/60 px-3 py-2.5 text-left opacity-60">
+      <span class="h-2 w-2 rounded-full bg-muted-foreground/40"></span>
+      <span class="text-[14px] font-medium">${a.id}</span>
+      <span class="ml-auto text-[12px] text-muted-foreground">paused</span></button>`;
+  }
+  if (!f) {
+    return `<button onclick="editAgent('${a.id}')" class="flex items-center gap-2.5 rounded-2xl border border-border bg-card px-3 py-2.5 text-left">
+      <span class="h-2 w-2 rounded-full bg-success"></span>
+      <span class="text-[14px] font-medium">${a.id}</span>
+      <span class="ml-auto text-[12px] text-muted-foreground">${a.schedule}</span></button>`;
+  }
+  return `
+  <button onclick="openSheet('${a.id}')" class="group relative flex flex-col gap-1 rounded-2xl border ${f.unread ? 'border-primary/40' : 'border-border'} bg-card px-3 py-2.5 text-left transition-colors">
+    <div class="flex items-center gap-2">
+      <span class="h-2 w-2 shrink-0 rounded-full ${sevColor[f.sev]}"></span>
+      <span class="text-[14px] font-semibold">${a.id}</span>
+      ${f.unread ? `<span class="rounded-full bg-primary px-1.5 py-0.5 text-[9px] font-bold uppercase text-white">new</span>` : ``}
+      <span class="ml-auto text-[11px] text-muted-foreground">${f.time}</span>
+    </div>
+    <div class="pl-4 text-[13px] leading-snug text-muted-foreground">${f.title}</div>
+    <div class="pl-4 pt-0.5 text-[11px] font-medium text-primary">Tap to read reasoning · reply to act ›</div>
+  </button>`;
+}
+
+function renderLive() {
+  $("grid-working").innerHTML = sessions.working.map(sessionCard).join("");
+  $("grid-idle").innerHTML = sessions.idle.map(sessionCard).join("");
+  $("grid-auto").innerHTML = agents.map(autoCard).join("");
+  $("count-working").textContent = sessions.working.length;
+  $("count-idle").textContent = sessions.idle.length;
+  $("count-auto").textContent = agents.filter(a => a.enabled).length;
+  $("sec-working").style.display = sessions.working.length ? "" : "none";
+  icons();
+}
+
+// ---------- render: auto manage ----------
+function renderAutoList() {
+  $("auto-list").innerHTML = agents.map(a => `
+    <button onclick="editAgent('${a.id}')" class="flex items-center gap-3 rounded-2xl border border-border bg-card px-3.5 py-3 text-left">
+      <span class="h-2.5 w-2.5 rounded-full ${a.enabled ? 'bg-success' : 'bg-muted-foreground/40'}"></span>
+      <div class="min-w-0">
+        <div class="text-[14px] font-semibold">${a.id}</div>
+        <div class="truncate text-[12px] text-muted-foreground">${a.prompt}</div>
+      </div>
+      <div class="ml-auto flex shrink-0 items-center gap-1 text-[12px] text-muted-foreground">
+        <i data-lucide="calendar-clock" class="h-3.5 w-3.5"></i>${a.schedule}
+      </div>
+    </button>`).join("");
+  icons();
+}
+
+// ---------- bottom sheet: message detail ----------
+function openSheet(id) {
+  const a = agents.find(x => x.id === id);
+  if (a && a.finding) a.finding.unread = false;
+  sheetAgentId = id;
+  const f = a.finding;
+  $("sheet").innerHTML = `
+    <div class="sheet-up">
+      <div class="mx-auto mt-2.5 h-1 w-9 rounded-full bg-border"></div>
+      <div class="px-5 pb-7 pt-4">
+        <div class="flex items-center gap-2">
+          <span class="h-2.5 w-2.5 rounded-full ${sevColor[f.sev]}"></span>
+          <span class="text-[15px] font-semibold">${a.id}</span>
+          <span class="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">${sevText[f.sev]}</span>
+          <span class="ml-auto text-[12px] text-muted-foreground">${f.time}</span>
+        </div>
+
+        <p class="mt-3 text-[15px] font-medium leading-snug">${f.title}</p>
+
+        <div class="mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Reasoning</div>
+        <ul class="mt-1.5 flex flex-col gap-1.5">
+          ${f.reasoning.map(r => `<li class="flex gap-2 text-[13.5px] text-foreground/90"><span class="text-muted-foreground">•</span><span>${r}</span></li>`).join("")}
+        </ul>
+
+        <div class="mt-4 rounded-xl bg-muted px-3 py-2.5 text-[13.5px]">
+          <span class="font-medium text-muted-foreground">Suggested →</span> ${f.suggest}
+        </div>
+
+        <div class="mt-5">
+          <div class="flex items-end gap-2 rounded-2xl border border-border bg-background px-3 py-2">
+            <textarea id="reply-box" rows="1" placeholder="Reply to act on this…"
+              class="max-h-28 flex-1 resize-none bg-transparent py-1 text-[14px] outline-none placeholder:text-muted-foreground"></textarea>
+            <button onclick="sendReply()" class="rounded-full bg-primary p-2 text-white active:scale-95">
+              <i data-lucide="arrow-up" class="h-4 w-4"></i>
+            </button>
+          </div>
+          <div class="mt-1.5 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+            <i data-lucide="corner-down-right" class="h-3 w-3"></i> Opens a real session in your Live view
+          </div>
+          <div class="mt-3 flex gap-2">
+            <button onclick="dismissFinding('${a.id}')" class="flex-1 rounded-xl border border-border py-2.5 text-[13px] font-medium text-muted-foreground">Dismiss</button>
+            <button onclick="closeSheet()" class="flex-1 rounded-xl border border-border py-2.5 text-[13px] font-medium text-muted-foreground">Snooze</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  showSheet();
+}
+
+// ---------- bottom sheet: prompt + schedule editor ----------
+function editAgent(id) {
+  const isNew = id === "__new";
+  const a = isNew ? { id: "", schedule: "daily · 09:00", enabled: true, prompt: "" } : agents.find(x => x.id === id);
+  sheetAgentId = id;
+  $("sheet").innerHTML = `
+    <div class="sheet-up">
+      <div class="mx-auto mt-2.5 h-1 w-9 rounded-full bg-border"></div>
+      <div class="px-5 pb-8 pt-4">
+        <div class="flex items-center gap-2">
+          <i data-lucide="bot" class="h-5 w-5 text-primary"></i>
+          <input id="ed-name" value="${a.id}" placeholder="agent-name"
+            class="flex-1 bg-transparent text-[17px] font-semibold outline-none placeholder:text-muted-foreground" />
+          <button onclick="saveAgent()" class="rounded-full bg-primary px-4 py-1.5 text-[13px] font-semibold text-white active:scale-95">Save</button>
+        </div>
+
+        <div class="mt-4 flex items-center justify-between rounded-xl border border-border px-3.5 py-2.5">
+          <div class="flex items-center gap-2 text-[14px]"><i data-lucide="calendar-clock" class="h-4 w-4 text-muted-foreground"></i> Schedule</div>
+          <input id="ed-sched" value="${a.schedule}" class="w-40 bg-transparent text-right text-[14px] outline-none" />
+        </div>
+
+        <div class="mt-2.5 flex items-center justify-between rounded-xl border border-border px-3.5 py-2.5">
+          <div class="flex items-center gap-2 text-[14px]"><i data-lucide="power" class="h-4 w-4 text-muted-foreground"></i> Enabled</div>
+          <button id="ed-toggle" onclick="this.dataset.on = this.dataset.on==='1'?'0':'1'; this.firstElementChild.classList.toggle('translate-x-5')"
+            data-on="${a.enabled ? '1' : '0'}"
+            class="relative h-6 w-11 rounded-full ${a.enabled ? 'bg-success' : 'bg-border'} transition-colors">
+            <span class="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${a.enabled ? 'translate-x-5' : ''}"></span>
+          </button>
+        </div>
+
+        <div class="mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Prompt — this is the entire agent</div>
+        <textarea id="ed-prompt" rows="7"
+          class="mt-1.5 w-full resize-none rounded-2xl border border-border bg-background px-3.5 py-3 text-[14px] leading-relaxed outline-none focus:border-primary"
+          placeholder="Describe what to watch for and what to flag. The agent runs as a real Claude session with tools — it gathers its own context.">${a.prompt}</textarea>
+        <div class="mt-1.5 px-1 text-[11px] text-muted-foreground">No config files, no sources to wire — just the prompt + a schedule.</div>
+
+        ${isNew ? "" : `<button onclick="closeSheet()" class="mt-5 w-full rounded-xl border border-border py-2.5 text-[13px] font-medium text-destructive">Delete agent</button>`}
+      </div>
+    </div>`;
+  showSheet();
+}
+
+function showSheet() { $("sheet-backdrop").classList.remove("hidden"); $("sheet").classList.remove("hidden"); icons(); }
+function closeSheet() { $("sheet-backdrop").classList.add("hidden"); $("sheet").classList.add("hidden"); sheetAgentId = null; }
+
+function saveAgent() { closeSheet(); flashToast("check", "Agent saved", "Schedule updated."); }
+function dismissFinding(id) {
+  const a = agents.find(x => x.id === id); if (a) a.finding = null;
+  closeSheet(); renderLive(); flashToast("eye-off", "Dismissed", id + " won't resurface this.");
+}
+
+function sendReply() {
+  const a = agents.find(x => x.id === sheetAgentId);
+  closeSheet();
+  // graduate the finding into a real working session
+  sessions.working.unshift({ name: a.id + " ▸ fix", model: "opus", busy: true,
+    msg: "Opening session from “" + a.finding.title + "”…" });
+  if (a) a.finding = null;
+  switchTab("live");
+  renderLive();
+  flashToast("zap", "Session started", "Now in your Working list.");
+}
+
+// ---------- tabs ----------
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll("[data-tab-panel]").forEach(p => p.classList.toggle("active", p.dataset.tabPanel === tab));
+  // nav capsule slide
+  const idx = tab === "live" ? 0 : 1;
+  $("nav-capsule").style.transform = `translateX(calc(${idx} * (4.5rem + 0.25rem)))`;
+  document.querySelectorAll("[data-nav]").forEach(b => {
+    const on = b.dataset.nav === tab;
+    b.classList.toggle("text-primary", on);
+    b.classList.toggle("text-muted-foreground", !on);
+  });
+  $("header-sub").textContent = tab === "auto" ? "· auto agents" : "";
+  if (tab === "auto") renderAutoList();
+  if (tab === "live") renderLive();
+}
+
+// ---------- toast ----------
+function flashToast(icon, title, body, agentId) {
+  const el = document.createElement("div");
+  el.className = "toast-in pointer-events-auto w-full max-w-sm";
+  el.innerHTML = `
+    <div class="flex items-center gap-3 rounded-2xl border border-border bg-card/95 px-3.5 py-3 shadow-[0_8px_28px_rgba(0,0,0,0.22)] backdrop-blur-xl">
+      <span class="grid h-8 w-8 place-items-center rounded-full bg-primary/12 text-primary"><i data-lucide="${icon}" class="h-4 w-4"></i></span>
+      <div class="min-w-0 flex-1">
+        <div class="text-[13.5px] font-semibold leading-tight">${title}</div>
+        <div class="truncate text-[12px] text-muted-foreground">${body}</div>
+      </div>
+      ${agentId ? `<button class="shrink-0 rounded-full bg-primary px-3 py-1.5 text-[12px] font-semibold text-white">View</button>` : ``}
+    </div>`;
+  if (agentId) el.querySelector("button").onclick = () => { el.remove(); openSheet(agentId); };
+  $("toast-zone").appendChild(el);
+  setTimeout(() => { el.style.transition = "opacity .3s, transform .3s"; el.style.opacity = "0"; el.style.transform = "translateY(10px)"; setTimeout(() => el.remove(), 320); }, agentId ? 6000 : 3200);
+}
+
+// ---------- theme ----------
+function toggleTheme() { document.documentElement.classList.toggle("dark"); }
+
+// ---------- boot ----------
+switchTab("live");
+icons();
+// simulate an auto agent firing shortly after load
+setTimeout(() => {
+  const a = agents.find(x => x.id === "design-review");
+  if (a && a.finding) { a.finding.unread = true; a.finding.time = "now"; renderLive(); }
+  flashToast("sparkles", "design-review responded", a.finding.title, "design-review");
+}, 1400);
+</script>
+</body>
+</html>
