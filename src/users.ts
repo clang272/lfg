@@ -12,11 +12,33 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 import { PATHS } from "./config.ts";
 
-// Fixed roster for now — add emails here to grow it.
-export const USERS = (process.env.LFG_USERS ?? "")
+// Roster config. Each LFG_USERS entry is `email` or `email:displayname` — the
+// optional name is what the UI shows (raw emails are hard to scan). Parse once
+// into the email list (USERS, kept as plain strings so USERS[0] / .includes()
+// callers stay unchanged) plus an email→name map.
+const ROSTER = (process.env.LFG_USERS ?? "")
   .split(",")
-  .map((e) => e.trim())
-  .filter(Boolean);
+  .map((entry) => entry.trim())
+  .filter(Boolean)
+  .map((entry) => {
+    const i = entry.indexOf(":");
+    return i === -1
+      ? { email: entry, name: "" }
+      : { email: entry.slice(0, i).trim(), name: entry.slice(i + 1).trim() };
+  })
+  .filter((u) => u.email);
+
+export const USERS = ROSTER.map((u) => u.email);
+
+const NAMES: Record<string, string> = Object.fromEntries(
+  ROSTER.map((u) => [u.email, u.name]),
+);
+
+// Friendly display name for an email — the configured name, else the local-part
+// of the address (everything before the @).
+export function displayName(email: string): string {
+  return NAMES[email] || email.split("@")[0];
+}
 
 // Gravatar avatar URL for an email — shows the user's real photo if they have a
 // Gravatar, else a deterministic per-email identicon. MD5 is computed here
@@ -26,8 +48,12 @@ export function gravatar(email: string): string {
   return `https://www.gravatar.com/avatar/${h}?d=identicon&s=80`;
 }
 
-export function userRoster(): { email: string; avatar: string }[] {
-  return USERS.map((email) => ({ email, avatar: gravatar(email) }));
+export function userRoster(): { email: string; name: string; avatar: string }[] {
+  return USERS.map((email) => ({
+    email,
+    name: displayName(email),
+    avatar: gravatar(email),
+  }));
 }
 
 const FILE = `${PATHS.data}/session-users.json`;

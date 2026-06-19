@@ -135,7 +135,7 @@ type Session = {
   statusDetail?: string | null;
 };
 
-type User = { email: string; avatar?: string };
+type User = { email: string; name?: string; avatar?: string };
 type Repo = { name: string; cwd: string };
 
 // Auto agents: a streamlined agent is JUST a prompt + a schedule. It emits
@@ -1838,7 +1838,7 @@ function UserFilterMenu({
         <option value="__unassigned">Unassigned</option>
         {users.map((user) => (
           <option key={user.email} value={user.email}>
-            {shortUser(user.email)}
+            {user.name ?? shortUser(user.email)}
           </option>
         ))}
       </select>
@@ -1890,7 +1890,7 @@ function WhoAreYou({
               )}
               <span className="min-w-0">
                 <span className="block truncate text-sm font-medium capitalize">
-                  {shortUser(user.email)}
+                  {user.name ?? shortUser(user.email)}
                 </span>
                 <span className="block truncate text-xs text-muted-foreground">
                   {user.email}
@@ -3672,7 +3672,7 @@ const SessionCard = memo(function SessionCard({
               <DropdownMenuRadioItem value="">Unassigned</DropdownMenuRadioItem>
               {users.map((user) => (
                 <DropdownMenuRadioItem key={user.email} value={user.email}>
-                  {shortUser(user.email)}
+                  {user.name ?? shortUser(user.email)}
                 </DropdownMenuRadioItem>
               ))}
             </DropdownMenuRadioGroup>
@@ -4567,7 +4567,7 @@ function NewSessionDialog({
               <option value="">Unassigned</option>
               {users.map((item) => (
                 <option key={item.email} value={item.email}>
-                  {shortUser(item.email)}
+                  {item.name ?? shortUser(item.email)}
                 </option>
               ))}
             </select>
