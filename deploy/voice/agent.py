@@ -127,6 +127,8 @@ VOICE_PROMPT = (
     "investigate, e.g. 'check our analytics' or 'see how the auth fix is "
     "going'). Pass a clear one-line `prompt`. It defaults to the user's focused "
     "project; pass `cwd` (from list_repos) only when they name a different one. "
+    "For a Codex session, pass `agent` as `codex-aisdk` and optionally pass "
+    "`thinkingLevel` as low, medium, high, or xhigh. "
     "You CAN create sessions from voice — do it when the user asks, don't tell "
     "them to use the dashboard.\n"
     "- reply_to_session — send an instruction to another session.\n"
@@ -394,11 +396,20 @@ FLEET_TOOLS = [
     },
     {
         "name": "create_session",
-        "description": "Start a NEW coding-agent session to work on a task OR to investigate/find out something the user asked about. Give it a clear one-line instruction in `prompt`. Optionally pass `cwd` (a repo path from list_repos); omit to default to the user's focused project. Returns the new session id. Slow (a few seconds) — say a short spoken preamble first.",
+        "description": "Start a NEW coding-agent session to work on a task OR to investigate/find out something the user asked about. Give it a clear one-line instruction in `prompt`. Optionally pass `cwd` (a repo path from list_repos); omit to default to the user's focused project. Optionally pass `agent` (`codex-aisdk` for Codex) and `thinkingLevel` for Codex reasoning effort. Returns the new session id. Slow (a few seconds) — say a short spoken preamble first.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "prompt": {"type": "string"},
+                "agent": {
+                    "type": "string",
+                    "enum": ["aisdk", "codex-aisdk", "opencode"],
+                },
+                "thinkingLevel": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "xhigh"],
+                    "description": "Optional Codex reasoning effort for a Codex session.",
+                },
                 "cwd": {"type": "string"},
             },
             "required": ["prompt"],
@@ -635,6 +646,13 @@ async def run_tool(name: str, args: dict) -> str:
                             break
             if cwd:
                 payload["cwd"] = cwd
+            agent = (args.get("agent") or "").strip()
+            if agent in ("aisdk", "codex-aisdk", "opencode"):
+                payload["agent"] = agent
+            thinking_level = (args.get("thinkingLevel") or "").strip()
+            if thinking_level in ("low", "medium", "high", "xhigh"):
+                payload["thinkingLevel"] = thinking_level
+                payload.setdefault("agent", "codex-aisdk")
             if CURRENT_USER:
                 payload["user"] = CURRENT_USER
             await set_activity("replying")
