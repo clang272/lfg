@@ -594,6 +594,28 @@ function inferCodexThreadForHarness(
   return matches[0] ?? null;
 }
 
+const CODEX_PROCESS_START_SLOP_MS = 30_000;
+const CODEX_THREAD_START_WINDOW_MS = 2 * 60_000;
+
+function inferCodexThreadForProcess(
+  e: { cwd: string; startedAt: number | null },
+  threads: CodexThread[],
+  claimed: Set<string>,
+): CodexThread | null {
+  if (!e.startedAt) return null;
+  const minTime = e.startedAt - CODEX_PROCESS_START_SLOP_MS;
+  const maxTime = e.startedAt + CODEX_THREAD_START_WINDOW_MS;
+  const matches = threads.filter(
+    (t) =>
+      t.cwd === e.cwd &&
+      !claimed.has(t.id) &&
+      t.createdAt != null &&
+      t.createdAt >= minTime &&
+      t.createdAt <= maxTime,
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
 // AI-SDK backed providers can persist a speaker prefix ("Human:" for Claude,
 // "User:" for Codex). Strip it so cards and transcript user messages read like
 // normal CLI sessions.
@@ -1219,6 +1241,10 @@ export async function listSessions(): Promise<Session[]> {
               samePrompt(t.firstUserText, prompt),
           )
           .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0] ?? null;
+      if (thread) sessionId = thread.id;
+    }
+    if (!thread && cwd) {
+      thread = inferCodexThreadForProcess({ cwd, startedAt }, codex, claimedCodex);
       if (thread) sessionId = thread.id;
     }
     if (thread) {
