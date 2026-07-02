@@ -1,10 +1,9 @@
-// Headless interactive session harness for the "pi" agent kind.
+// Headless session harness for the "pi" agent kind.
 //
-// Pi is a TTY-oriented CLI, but it does not currently have a transcript format
-// that lfg can discover like Claude/Codex. This harness gives it the same lfg
-// UX contract as the other managed agents: stable session id, command-file
-// control, busy state, and a Claude-shaped transcript that the existing live
-// view can stream without Pi-specific frontend code.
+// Pi can run as a TTY app, but its repaint stream is not a useful lfg
+// transcript. Drive it one turn at a time through `pi --print --mode json`
+// against a fixed Pi session file, and self-write the Claude-shaped transcript
+// lfg already knows how to stream.
 import {
   type AisdkCommand,
   cmdPath,
@@ -14,7 +13,7 @@ import {
 } from "../../aisdk-registry.ts";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 function arg(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -31,37 +30,6 @@ function resolvePiBin(): string {
   return Bun.which("pi") ?? "pi";
 }
 
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-function piSpawnArgs(): string[] {
-  const pi = resolvePiBin();
-  const script = process.platform === "linux" ? Bun.which("script") : null;
-  if (script) return [script, "-qfec", `${shellQuote(pi)} chat`, "/dev/null"];
-  return [pi, "chat"];
-}
-
-function writePipe(pipe: unknown, text: string): void {
-  const p = pipe as {
-    write?: (chunk: string) => unknown;
-    flush?: () => unknown;
-    getWriter?: () => { write: (chunk: string) => unknown; releaseLock?: () => void };
-  } | null;
-  try {
-    if (p?.write) {
-      p.write(text);
-      p.flush?.();
-      return;
-    }
-    const writer = p?.getWriter?.();
-    if (writer) {
-      void writer.write(text);
-      writer.releaseLock?.();
-    }
-  } catch {}
-}
-
 function describeJson(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -70,6 +38,68 @@ function describeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function piSessionPathFor(cwd: string, uuid: string): string {
+  const enc = cwd.replace(/\//g, "--").replace(/^-+/, "");
+  return join(homedir(), ".pi", "agent", "sessions", "lfg", enc, `${uuid}.jsonl`);
+}
+
+function textFromJson(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  const obj = value as Record<string, unknown>;
+  for (const k of ["text", "content", "message", "response", "output", "delta"]) {
+    const v = obj[k];
+    if (typeof v === "string") return v;
+  }
+  const parts = obj.parts;
+  if (Array.isArray(parts)) return parts.map(textFromJson).filter(Boolean).join("");
+  return "";
+}
+
+function contentFromPiJson(raw: string): unknown[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  const deltas: string[] = [];
+  let finalText = "";
+  for (const line of trimmed.split("\n")) {
+    const s = line.trim();
+    if (!s) continue;
+    try {
+      const parsed = JSON.parse(s) as Record<string, unknown>;
+      const type = String(parsed.type ?? "");
+      const event = parsed.assistantMessageEvent as Record<string, unknown> | undefined;
+      if (type === "message_update" && event) {
+        const eventType = String(event.type ?? "");
+        if (eventType === "text_delta" && typeof event.delta === "string") deltas.push(event.delta);
+        if (eventType === "text_end" && typeof event.content === "string") finalText = event.content;
+        continue;
+      }
+      if ((type === "message_end" || type === "turn_end") && parsed.message) {
+        const t = textFromJson(parsed.message);
+        if (t) finalText = t;
+        continue;
+      }
+      if (type === "agent_end" && Array.isArray(parsed.messages)) {
+        const lastAssistant = [...parsed.messages]
+          .reverse()
+          .find((m) => m && typeof m === "object" && (m as Record<string, unknown>).role === "assistant");
+        const t = textFromJson(lastAssistant);
+        if (t) finalText = t;
+      }
+    } catch {}
+  }
+  const text = finalText || deltas.join("");
+  if (text) return [{ type: "text", text }];
+  try {
+    const parsed = JSON.parse(trimmed);
+    const t = Array.isArray(parsed)
+      ? parsed.map(textFromJson).filter(Boolean).join("")
+      : textFromJson(parsed);
+    if (t) return [{ type: "text", text: t }];
+  } catch {}
+  return [{ type: "text", text: trimmed }];
 }
 
 export async function cmdPiSession(argv: string[]): Promise<void> {
@@ -91,14 +121,16 @@ export async function cmdPiSession(argv: string[]): Promise<void> {
   } catch {}
 
   const transcriptPath = transcriptPathFor(cwd, sessionKey);
+  const piSessionPath = piSessionPathFor(cwd, sessionKey);
   try {
-    mkdirSync(join(transcriptPath, ".."), { recursive: true });
+    mkdirSync(dirname(transcriptPath), { recursive: true });
+    mkdirSync(dirname(piSessionPath), { recursive: true });
   } catch {}
 
   let parentUuid: string | null = null;
   let closing = false;
-  let quietTimer: ReturnType<typeof setTimeout> | null = null;
-  const recentSent: string[] = [];
+  let activeAbort: AbortController | null = null;
+  let turnQueue = Promise.resolve();
 
   function appendLine(obj: Record<string, unknown>): void {
     try {
@@ -137,107 +169,8 @@ export async function cmdPiSession(argv: string[]): Promise<void> {
   }
 
   function markBusy(): void {
-    if (quietTimer) clearTimeout(quietTimer);
     patchEntry(sessionKey, { busy: true });
-    quietTimer = setTimeout(() => patchEntry(sessionKey, { busy: false }), 1500);
   }
-
-  function recordPiLine(raw: string, source: "stdout" | "stderr"): void {
-    const text = raw.replace(/\r/g, "").trimEnd();
-    if (!text.trim()) return;
-    markBusy();
-    const stripped = text.trim();
-    const echoed = recentSent.indexOf(stripped);
-    if (echoed >= 0) {
-      recentSent.splice(echoed, 1);
-      return;
-    }
-    if (stripped.startsWith("{") && stripped.endsWith("}")) {
-      try {
-        const payload = JSON.parse(stripped) as {
-          type?: string;
-          text?: string;
-          name?: string;
-          arguments?: unknown;
-          output?: unknown;
-          exit_code?: unknown;
-          reason?: string;
-          scope?: string;
-        };
-        const type = String(payload.type ?? "").toLowerCase();
-        if (["assistant", "assistant_message", "message", "token"].includes(type) && payload.text) {
-          writeAssistant([{ type: "text", text: String(payload.text) }]);
-          return;
-        }
-        if (type === "tool_call") {
-          writeAssistant([
-            {
-              type: "tool_use",
-              name: String(payload.name || "tool"),
-              input: payload.arguments ?? {},
-            },
-          ]);
-          return;
-        }
-        if (type === "tool_result") {
-          writeAssistant([
-            {
-              type: "tool_result",
-              content: describeJson(payload.output),
-            },
-          ]);
-          return;
-        }
-        if (type === "approval_request") {
-          writeAssistant([
-            {
-              type: "tool_use",
-              name: "AskUserQuestion",
-              input: {
-                question: payload.reason || "Pi requested approval",
-                options: ["Approve", "Deny"],
-                scope: payload.scope || "pi.tool",
-              },
-            },
-          ]);
-          return;
-        }
-        if (type === "status") return;
-      } catch {}
-    }
-    writeAssistant([{ type: "text", text }], source === "stderr");
-  }
-
-  async function pump(stream: ReadableStream<Uint8Array> | null, source: "stdout" | "stderr"): Promise<void> {
-    if (!stream) return;
-    const decoder = new TextDecoder();
-    let buf = "";
-    try {
-      for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
-        buf += decoder.decode(chunk, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-        for (const line of lines) recordPiLine(line, source);
-      }
-      buf += decoder.decode();
-      if (buf.trim()) recordPiLine(buf, source);
-    } catch (e) {
-      if (!closing) writeAssistant([{ type: "text", text: `Pi stream failed: ${e instanceof Error ? e.message : String(e)}` }], true);
-    }
-  }
-
-  const pi = Bun.spawn(piSpawnArgs(), {
-    cwd,
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      CONTROL_WORKING_DIRECTORY: cwd,
-      CONTROL_CONVERSATION_ID: sessionKey,
-      CONTROL_RUN_ID: sessionKey,
-    },
-  });
 
   writeEntry({
     sessionId: sessionKey,
@@ -251,25 +184,67 @@ export async function cmdPiSession(argv: string[]): Promise<void> {
     createdAt: Date.now(),
   });
 
-  void pump(pi.stdout as ReadableStream<Uint8Array> | null, "stdout");
-  void pump(pi.stderr as ReadableStream<Uint8Array> | null, "stderr");
+  async function runPiTurn(text: string): Promise<void> {
+    const controller = new AbortController();
+    activeAbort = controller;
+    patchEntry(sessionKey, { busy: true });
+    const args = [
+      resolvePiBin(),
+      "--print",
+      "--mode",
+      "json",
+      "--session",
+      piSessionPath,
+    ];
+    if (model && model !== "pi") args.push("--model", model);
+    args.push(text);
+    try {
+      const proc = Bun.spawn(args, {
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+        signal: controller.signal,
+        env: {
+          ...process.env,
+          CONTROL_WORKING_DIRECTORY: cwd,
+          CONTROL_CONVERSATION_ID: sessionKey,
+          CONTROL_RUN_ID: sessionKey,
+        },
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text().catch(() => ""),
+        new Response(proc.stderr).text().catch(() => ""),
+        proc.exited.catch((e) => (controller.signal.aborted ? 130 : Promise.reject(e))),
+      ]);
+      if (controller.signal.aborted || closing) return;
+      if (code === 0) {
+        writeAssistant(contentFromPiJson(stdout));
+      } else {
+        writeAssistant(
+          [{ type: "text", text: stderr.trim() || stdout.trim() || `Pi exited with code ${code}` }],
+          true,
+        );
+      }
+    } catch (e) {
+      if (!controller.signal.aborted && !closing)
+        writeAssistant([{ type: "text", text: `Pi turn failed: ${e instanceof Error ? e.message : String(e)}` }], true);
+    } finally {
+      if (activeAbort === controller) activeAbort = null;
+      patchEntry(sessionKey, { busy: false });
+    }
+  }
 
   function send(text: string): void {
     const t = text.trim();
     if (!t) return;
     writeUser(t);
-    recentSent.push(t);
-    if (recentSent.length > 12) recentSent.shift();
     markBusy();
-    writePipe(pi.stdin, `${t}\n`);
+    turnQueue = turnQueue.then(() => runPiTurn(t), () => runPiTurn(t));
   }
 
   function shutdown(): void {
     closing = true;
-    if (quietTimer) clearTimeout(quietTimer);
-    try {
-      pi.kill();
-    } catch {}
+    activeAbort?.abort();
     removeEntry(sessionKey);
     setTimeout(() => process.exit(0), 50);
   }
@@ -277,9 +252,7 @@ export async function cmdPiSession(argv: string[]): Promise<void> {
   function dispatch(cmd: AisdkCommand): void {
     if (cmd.type === "send") send(cmd.text);
     else if (cmd.type === "interrupt") {
-      try {
-        pi.kill("SIGINT");
-      } catch {}
+      activeAbort?.abort();
       patchEntry(sessionKey, { busy: false });
     } else if (cmd.type === "close") shutdown();
   }
@@ -309,12 +282,7 @@ export async function cmdPiSession(argv: string[]): Promise<void> {
 
   if (initialPrompt) send(initialPrompt);
 
-  const code = await pi.exited.catch(() => null);
-  if (!closing) {
-    if (code !== 0 && code != null) writeAssistant([{ type: "text", text: `Pi exited with code ${code}` }], true);
-    patchEntry(sessionKey, { busy: false });
-  }
-  clearInterval(poll);
+  await new Promise<never>(() => {});
 }
 
 if (import.meta.main) {
