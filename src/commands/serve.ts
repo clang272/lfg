@@ -2447,6 +2447,15 @@ export async function cmdServe() {
         if (agent === "codex-aisdk") {
           for (let i = 0; i < 20 && !readAisdkEntry(codexAisdkKey!); i++)
             await new Promise((res) => setTimeout(res, 250));
+          if (!readAisdkEntry(codexAisdkKey!)) {
+            const pane = capturePane(`${tmuxName}:0.0`) || "";
+            tmuxKillSession(tmuxName);
+            removeManaged(tmuxName);
+            return err(
+              502,
+              `codex-aisdk session failed to register${pane.trim() ? `: ${pane.trim().slice(-800)}` : ""}`,
+            );
+          }
           sessionId = codexAisdkKey;
           for (let i = 0; i < 12; i++) {
             const tid = readAisdkEntry(codexAisdkKey!)?.threadId;

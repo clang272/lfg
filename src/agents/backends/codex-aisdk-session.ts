@@ -36,7 +36,7 @@ import {
   removeEntry,
   writeEntry,
 } from "../../aisdk-registry.ts";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 function arg(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
@@ -45,7 +45,10 @@ function arg(argv: string[], name: string): string | undefined {
 
 function resolveCodexPath(): string | undefined {
   try {
-    return process.env.LFG_CODEX_PATH ?? Bun.which("codex") ?? undefined;
+    if (process.env.LFG_CODEX_PATH) return process.env.LFG_CODEX_PATH;
+    const local = `${import.meta.dir}/../../../node_modules/.bin/codex`;
+    if (existsSync(local)) return local;
+    return Bun.which("codex") ?? undefined;
   } catch {
     return undefined;
   }

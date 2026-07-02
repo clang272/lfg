@@ -59,6 +59,9 @@ export function claudeBin(): string {
 let _codexBin: string | null = null;
 export function codexBin(): string {
   if (_codexBin) return _codexBin;
+  if (process.env.LFG_CODEX_PATH) return (_codexBin = process.env.LFG_CODEX_PATH);
+  const local = `${import.meta.dir}/../node_modules/.bin/codex`;
+  if (existsSync(local)) return (_codexBin = local);
   const onPath = Bun.which("codex");
   if (onPath) return (_codexBin = onPath);
   const home = process.env.HOME ?? homedir();
@@ -477,7 +480,12 @@ export function spawnManagedCodexAisdkSession(opts: {
   if (opts.thinkingLevel) argv.push("--thinking-level", opts.thinkingLevel);
   if (opts.resume) argv.push("--resume", opts.resume);
   if (opts.prompt && opts.prompt.trim()) argv.push("--", opts.prompt);
-  const create = Bun.spawnSync(argv);
+  const create = Bun.spawnSync(argv, {
+    env: {
+      ...process.env,
+      LFG_CODEX_PATH: codexBin(),
+    },
+  });
   if (create.exitCode !== 0)
     return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
   return { ok: true };
