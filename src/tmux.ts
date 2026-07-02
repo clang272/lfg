@@ -89,6 +89,23 @@ export function grokBin(): string {
   return (_grokBin = "grok");
 }
 
+let _piBin: string | null = null;
+export function piBin(): string {
+  if (_piBin) return _piBin;
+  if (process.env.LFG_PI_PATH) return (_piBin = process.env.LFG_PI_PATH);
+  const onPath = Bun.which("pi");
+  if (onPath) return (_piBin = onPath);
+  const home = process.env.HOME ?? homedir();
+  for (const p of [
+    `${home}/.local/bin/pi`,
+    `${home}/.bun/bin/pi`,
+    "/usr/local/bin/pi",
+  ]) {
+    if (existsSync(p)) return (_piBin = p);
+  }
+  return (_piBin = "pi");
+}
+
 // Spawned agents run with cwd set to one repo, but Claude Code scopes tool
 // access to the cwd tree — which sandboxes the agent to that single repo. The
 // agents are trusted operators of this whole box, so grant tool access to the
@@ -497,6 +514,35 @@ export function spawnManagedOpencodeAisdkSession(opts: {
   ];
   if (opts.prompt && opts.prompt.trim()) argv.push("--", opts.prompt);
   const create = Bun.spawnSync(argv);
+  if (create.exitCode !== 0)
+    return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
+  return { ok: true };
+}
+
+export function spawnManagedPiSession(opts: {
+  name: string;
+  cwd: string;
+  prompt?: string;
+  key: string;
+  model?: string;
+}): { ok: boolean; error?: string } {
+  const dec = new TextDecoder();
+  const harnessPath = `${import.meta.dir}/agents/backends/pi-session.ts`;
+  const argv = [
+    "tmux", "new-session", "-d", "-s", opts.name, "-c", opts.cwd,
+    process.execPath, harnessPath,
+    "--key", opts.key,
+    "--model", opts.model ?? "pi",
+    "--cwd", opts.cwd,
+    "--tmux", opts.name,
+  ];
+  if (opts.prompt && opts.prompt.trim()) argv.push("--", opts.prompt);
+  const create = Bun.spawnSync(argv, {
+    env: {
+      ...process.env,
+      LFG_PI_PATH: piBin(),
+    },
+  });
   if (create.exitCode !== 0)
     return { ok: false, error: dec.decode(create.stderr) || "new-session failed" };
   return { ok: true };

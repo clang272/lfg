@@ -47,7 +47,7 @@ export type SessionMsg = {
 };
 
 export type Session = {
-  agent: "claude" | "codex" | "aisdk" | "codex-aisdk" | "opencode" | "grok";
+  agent: "claude" | "codex" | "aisdk" | "codex-aisdk" | "opencode" | "grok" | "pi";
   pid: number;
   cmd: string;
   cwd: string | null;
@@ -1401,6 +1401,7 @@ export async function listSessions(): Promise<Session[]> {
     // control-plane key (the harness writes no codex rollout) — so they discover
     // exactly like a Claude aisdk entry: transcript by sessionId, raw model.
     const isOpencode = e.agent === "opencode";
+    const isPi = e.agent === "pi";
     // Claude/opencode entries name their transcript by the (deterministic)
     // sessionId. Codex entries persist a rollout under ~/.codex/sessions keyed by
     // the app-server threadId, which we only know after turn 1 — so the transcript
@@ -1444,13 +1445,15 @@ export async function listSessions(): Promise<Session[]> {
       startedAt = statSync(`/proc/${e.harnessPid}`).ctimeMs;
     } catch {}
     out.push({
-      agent: isCodex ? "codex-aisdk" : isOpencode ? "opencode" : "aisdk",
+      agent: isCodex ? "codex-aisdk" : isOpencode ? "opencode" : isPi ? "pi" : "aisdk",
       pid: e.harnessPid,
       cmd: isCodex
         ? `lfg codex-aisdk-session --model ${e.model}`
         : isOpencode
           ? `lfg opencode-aisdk-session --model ${e.model}`
-          : `lfg aisdk-session --model ${e.model}`,
+          : isPi
+            ? `lfg pi-session --model ${e.model}`
+            : `lfg aisdk-session --model ${e.model}`,
       cwd: e.cwd,
       project,
       title,
@@ -1465,10 +1468,10 @@ export async function listSessions(): Promise<Session[]> {
       tmuxName: e.tmuxName || null,
       managed: isManagedName(e.tmuxName),
       assignedUser: e.tmuxName ? (assigns[e.tmuxName] ?? null) : null,
-      // Codex slugs and opencode "provider/model" ids aren't Claude aliases —
+      // Codex slugs, opencode "provider/model" ids, and Pi's CLI label aren't Claude aliases —
       // pass them through raw. modelAlias would leave them unchanged anyway, but
       // be explicit about intent.
-      model: isCodex || isOpencode ? e.model : modelAlias(e.model),
+      model: isCodex || isOpencode || isPi ? e.model : modelAlias(e.model),
       ...computeStatus(last, null),
     });
   }
@@ -1571,8 +1574,9 @@ export async function resolveTranscript(sessionId: string): Promise<string | nul
   // be written to under ~/.claude/projects/... even if the .jsonl does not exist
   // on disk yet. This lets /api/live/stream establish a tailer immediately; pump
   // will deliver lines as soon as the harness/provider writes the first content.
-  // (Codex-aisdk uses separate rollout paths and threadIds assigned after turn 1.)
-  if (entry?.cwd && entry.agent !== "codex" && entry.agent !== "codex-aisdk") {
+  // (Codex-aisdk registry entries are stored as agent: "codex"; they use
+  // separate rollout paths and threadIds assigned after turn 1.)
+  if (entry?.cwd && entry.agent !== "codex") {
     for (const d of candidateDirs(entry.cwd)) {
       const cand = join(PROJECTS_DIR, d, `${id}.jsonl`);
       return cand;

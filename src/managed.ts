@@ -16,7 +16,7 @@ export type ManagedSession = {
   tmuxName: string;
   cwd: string;
   createdAt: number;
-  agent?: "claude" | "codex" | "aisdk" | "codex-aisdk" | "opencode" | "grok";
+  agent?: "claude" | "codex" | "aisdk" | "codex-aisdk" | "opencode" | "grok" | "pi";
   sessionId?: string;
   /** Main repo checkout when cwd is an auto-provisioned worktree. */
   repoRoot?: string;

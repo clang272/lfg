@@ -81,6 +81,7 @@ import {
   spawnManagedAisdkSession,
   spawnManagedCodexAisdkSession,
   spawnManagedOpencodeAisdkSession,
+  spawnManagedPiSession,
   dismissCodexUpdatePrompt,
   panePidForSession,
   isBusy,
@@ -201,11 +202,15 @@ const AUTO_AGENT_BACKENDS = ["aisdk", "codex-aisdk", "opencode"] as const;
 const CODEX_THINKING_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 const CLAUDE_THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 // The levels a given agent kind honors, or null when the agent has no
-// thinking/reasoning knob at all (opencode's provider exposes none).
+// thinking/reasoning knob at all (opencode and Pi expose none to lfg).
 function thinkingLevelsForAgent(agent: string): readonly string[] | null {
   if (agent === "claude" || agent === "aisdk" || agent === "grok") return CLAUDE_THINKING_LEVELS;
   if (agent === "codex" || agent === "codex-aisdk") return CODEX_THINKING_LEVELS;
   return null;
+}
+
+function isHarnessSessionAgent(agent: string | null | undefined): boolean {
+  return agent === "aisdk" || agent === "codex-aisdk" || agent === "opencode" || agent === "pi";
 }
 import { enqueueMessage, listQueue, retryMessage, clearResolved, reconcileQueued, getMessage } from "../sendq.ts";
 import { startFleetWatcher, subscribeFleet, type FleetEvent } from "../voice-bus.ts";
@@ -417,6 +422,7 @@ const STATIC_FILES: Record<string, { path: string; type: string }> = {
   "/agent-codex.svg": { path: join(WEB_DIR, "agent-codex.svg"), type: "image/svg+xml" },
   "/agent-opencode.svg": { path: join(WEB_DIR, "agent-opencode.svg"), type: "image/svg+xml" },
   "/agent-grok.svg": { path: join(WEB_DIR, "agent-grok.svg"), type: "image/svg+xml" },
+  "/agent-pi.svg": { path: join(WEB_DIR, "agent-pi.svg"), type: "image/svg+xml" },
   "/apple-touch-icon.png": { path: join(WEB_DIR, "icon.svg"), type: "image/svg+xml" },
 };
 
@@ -1498,7 +1504,7 @@ export async function cmdServe() {
           if (thinkingLevel) {
             const allowed = thinkingLevelsForAgent(autoBackend);
             if (!allowed)
-              return err(400, "thinkingLevel is not supported for opencode auto agents");
+              return err(400, `thinkingLevel is not supported for ${autoBackend} auto agents`);
             if (!allowed.includes(thinkingLevel))
               return err(400, `unknown thinking level "${thinkingLevel}" for ${autoBackend} (expected one of ${allowed.join(", ")})`);
           }
@@ -2159,7 +2165,7 @@ export async function cmdServe() {
             user?: string;
             model?: string;
             thinkingLevel?: string;
-            agent?: "claude" | "codex" | "aisdk" | "codex-aisdk" | "opencode" | "grok";
+            agent?: "claude" | "codex" | "aisdk" | "codex-aisdk" | "opencode" | "grok" | "pi";
           } | null;
           const source = (await listSessions()).find((s) => s.sessionId === sourceId);
           const transcript = await resolveTranscript(sourceId);
@@ -2227,7 +2233,7 @@ export async function cmdServe() {
           worktree?: boolean;
           model?: string;
           thinkingLevel?: string;
-          agent?: "claude" | "codex" | "aisdk" | "codex-aisdk" | "opencode" | "grok";
+          agent?: "claude" | "codex" | "aisdk" | "codex-aisdk" | "opencode" | "grok" | "pi";
         } | null;
         // Default flip (Task B): with no agent specified, the default Claude path
         // now goes through the AI SDK ("aisdk") rather than the Claude CLI. Every
@@ -2239,11 +2245,13 @@ export async function cmdServe() {
               ? "codex-aisdk"
               : body?.agent === "opencode"
                 ? "opencode"
-                : body?.agent === "grok"
-                  ? "grok"
-                  : body?.agent === "claude"
-                    ? "claude"
-                    : "aisdk";
+                : body?.agent === "pi"
+                  ? "pi"
+                  : body?.agent === "grok"
+                    ? "grok"
+                    : body?.agent === "claude"
+                      ? "claude"
+                      : "aisdk";
         // Allowlist Claude models — they land on a shell argv. Unknown value =
         // hard 400, never a silent fallback to some other model. Codex model
         // names are provider/catalog driven, so validate shape instead.
@@ -2270,6 +2278,8 @@ export async function cmdServe() {
         // validate by shape rather than an allowlist.
         if (agent === "opencode" && model && !/^[A-Za-z0-9_.:\/-]{1,80}$/.test(model))
           return err(400, "invalid opencode model name");
+        if (agent === "pi" && model && !/^[A-Za-z0-9_.:\/-]{1,80}$/.test(model))
+          return err(400, "invalid pi model name");
         const thinkingLevel = body?.thinkingLevel?.trim() || undefined;
         // Thinking mode is supported on every agent kind that exposes a
         // reasoning-effort knob: Codex (reasoning_effort) and Claude (the claude
@@ -2282,7 +2292,7 @@ export async function cmdServe() {
         if (thinkingLevel) {
           const allowed = thinkingLevelsForAgent(agent);
           if (!allowed)
-            return err(400, "thinkingLevel is not supported for opencode sessions (set reasoning effort in opencode's own model config)");
+            return err(400, `thinkingLevel is not supported for ${agent} sessions`);
           if (!allowed.includes(thinkingLevel))
             return err(400, `unknown thinking level "${thinkingLevel}" for ${agent} (expected one of ${allowed.join(", ")})`);
         }
@@ -2328,6 +2338,7 @@ export async function cmdServe() {
         // the returned sessionId == key (no after-turn-1 id to wait for, unlike
         // codex-aisdk). See the opencode harness header.
         const opencodeKey = agent === "opencode" ? crypto.randomUUID() : null;
+        const piKey = agent === "pi" ? crypto.randomUUID() : null;
         // Grok does not write ~/.grok/active_sessions.json until a real
         // conversation starts, so a newly-opened blank TUI has no native id yet.
         // Mint a stable lfg id up front; listSessions maps it to Grok's native
@@ -2370,7 +2381,15 @@ export async function cmdServe() {
                       model: model ?? OPENCODE_DEFAULT_MODEL,
                       key: opencodeKey!,
                     })
-                  : spawnManagedSession({ name: tmuxName, cwd, prompt, model, thinkingLevel });
+                  : agent === "pi"
+                    ? spawnManagedPiSession({
+                        name: tmuxName,
+                        cwd,
+                        prompt,
+                        model: model ?? "pi",
+                        key: piKey!,
+                      })
+                    : spawnManagedSession({ name: tmuxName, cwd, prompt, model, thinkingLevel });
         if (!r.ok) return err(502, r.error || "failed to start session");
         addManaged({
           tmuxName,
@@ -2413,6 +2432,11 @@ export async function cmdServe() {
           for (let i = 0; i < 20 && !readAisdkEntry(opencodeKey!); i++)
             await new Promise((res) => setTimeout(res, 250));
           sessionId = opencodeKey;
+        }
+        if (agent === "pi") {
+          for (let i = 0; i < 20 && !readAisdkEntry(piKey!); i++)
+            await new Promise((res) => setTimeout(res, 250));
+          sessionId = piKey;
         }
         // codex-aisdk: wait for the harness to register (so the session is
         // listable), then prefer the codex threadId once turn 1 reports it (it
@@ -2489,11 +2513,7 @@ export async function cmdServe() {
           // the harness runs it. For codex-aisdk the live-view id is the codex
           // threadId, not the control-plane key the command file is named by, so
           // map it back via the registry.
-          if (
-            sess.agent === "aisdk" ||
-            sess.agent === "codex-aisdk" ||
-            sess.agent === "opencode"
-          ) {
+          if (isHarnessSessionAgent(sess.agent)) {
             const key = findAisdkEntryByAnyId(m[1])?.sessionId ?? m[1];
             appendAisdkCmd(key, { type: "send", text });
             return json({ ok: true, msg: { id: randomBytes(8).toString("hex"), text, status: "delivered" } });
@@ -2729,11 +2749,7 @@ export async function cmdServe() {
         if (m && req.method === "POST") {
           const sess = (await listSessions()).find((s) => s.sessionId === m[1]);
           if (!sess) return err(404, "session not found");
-          if (
-            sess.agent === "aisdk" ||
-            sess.agent === "codex-aisdk" ||
-            sess.agent === "opencode"
-          ) {
+          if (isHarnessSessionAgent(sess.agent)) {
             // Abort the current turn via the harness (AbortController on its
             // side). Map a codex-aisdk threadId back to the control-plane key.
             const key = findAisdkEntryByAnyId(m[1])?.sessionId ?? m[1];
@@ -2757,11 +2773,7 @@ export async function cmdServe() {
         if (m && req.method === "POST") {
           const sess = (await listSessions()).find((s) => s.sessionId === m[1]);
           if (!sess) return err(404, "session not found");
-          if (
-            sess.agent === "aisdk" ||
-            sess.agent === "codex-aisdk" ||
-            sess.agent === "opencode"
-          ) {
+          if (isHarnessSessionAgent(sess.agent)) {
             // Ask the harness to shut down, then tear down its supervisor pane and
             // control-plane files. markClosed tombstones the harness pid so the
             // session drops out of the list immediately. For codex-aisdk the

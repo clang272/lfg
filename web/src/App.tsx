@@ -141,7 +141,7 @@ type AgentReport = {
 };
 
 type Session = {
-  agent?: "claude" | "aisdk" | "codex" | "codex-aisdk" | "opencode" | "grok" | string;
+  agent?: "claude" | "aisdk" | "codex" | "codex-aisdk" | "opencode" | "grok" | "pi" | string;
   pid?: number;
   cmd?: string;
   cwd?: string;
@@ -263,6 +263,7 @@ const OPENCODE_MODELS = [
   "opencode-go/qwen3.7-plus",
   "opencode/big-pickle",
 ];
+const PI_MODELS = ["pi"];
 const THINKING_LEVELS = ["low", "medium", "high", "xhigh"] as const;
 type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 type AutoAgentBackend = "aisdk" | "codex-aisdk" | "opencode";
@@ -276,7 +277,7 @@ function savedThinkingLevel(): ThinkingLevel {
   return THINKING_LEVELS.includes(value as ThinkingLevel) ? (value as ThinkingLevel) : "medium";
 }
 
-type AgentKind = "claude" | "aisdk" | "codex" | "codex-aisdk" | "opencode" | "grok";
+type AgentKind = "claude" | "aisdk" | "codex" | "codex-aisdk" | "opencode" | "grok" | "pi";
 
 // Which agents honor a thinking/reasoning-effort level. Claude (CLI + ai-sdk)
 // takes an `effort`; Codex (CLI + ai-sdk) takes a `reasoning_effort` — both
@@ -306,6 +307,7 @@ const AGENT_MODELS: Record<AgentKind, string[]> = {
   "codex-aisdk": CODEX_AISDK_MODELS,
   grok: GROK_MODELS,
   opencode: OPENCODE_MODELS,
+  pi: PI_MODELS,
 };
 const AGENT_DEFAULT_MODEL: Record<AgentKind, string> = {
   claude: "sonnet",
@@ -314,6 +316,7 @@ const AGENT_DEFAULT_MODEL: Record<AgentKind, string> = {
   "codex-aisdk": "gpt-5.5",
   grok: "grok-composer-2.5-fast",
   opencode: "opencode-go/deepseek-v4-flash",
+  pi: "pi",
 };
 
 // New-session picker options, in display order. The three AI-SDK agents are the
@@ -324,6 +327,7 @@ const AGENT_OPTIONS: { key: AgentKind; label: string; Icon: typeof Sparkles }[] 
   { key: "codex-aisdk", label: "codex", Icon: Braces },
   { key: "grok", label: "grok", Icon: Bot },
   { key: "opencode", label: "opencode", Icon: Boxes },
+  { key: "pi", label: "pi", Icon: Bot },
 ];
 
 // Maps an agent-kind to its session-card / picker icon. codex variants share the
@@ -332,17 +336,19 @@ function agentIconSrc(agent?: string): string {
   if (agent === "codex" || agent === "codex-aisdk") return "/agent-codex.svg";
   if (agent === "grok") return "/agent-grok.svg";
   if (agent === "opencode") return "/agent-opencode.svg";
+  if (agent === "pi") return "/agent-pi.svg";
   return "/agent-claude.svg";
 }
 function agentIconAlt(agent?: string): string {
   if (agent === "codex" || agent === "codex-aisdk") return "Codex";
   if (agent === "grok") return "Grok";
   if (agent === "opencode") return "OpenCode";
+  if (agent === "pi") return "Pi";
   return "Claude";
 }
 
 function isHarnessAgent(agent?: string | null): boolean {
-  return agent === "aisdk" || agent === "codex-aisdk" || agent === "opencode";
+  return agent === "aisdk" || agent === "codex-aisdk" || agent === "opencode" || agent === "pi";
 }
 
 function canDriveSession(session: Pick<Session, "agent" | "tmuxTarget">): boolean {

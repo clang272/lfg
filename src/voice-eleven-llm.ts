@@ -66,7 +66,7 @@ You can act on the fleet with tools. ALWAYS resolve a session to its exact id (f
 - list_sessions — get session ids + titles, plus agent kind, model, project, status, and how long each has been idle.
 - search_transcript — search ONE session's full history for a word/phrase and get matching snippets.
 - list_repos — list the projects/repos a new session can start in (name + path).
-- create_session — start a NEW coding-agent session, either to DO a task or to GO FIND OUT something. Pass a clear one-line prompt. Defaults to the user's focused project; pass cwd (from list_repos) only when they name a different one. Optionally pass agent (codex-aisdk for Codex, opencode for OpenCode) and thinkingLevel (low/medium/high/xhigh).
+- create_session — start a NEW coding-agent session, either to DO a task or to GO FIND OUT something. Pass a clear one-line prompt. Defaults to the user's focused project; pass cwd (from list_repos) only when they name a different one. Optionally pass agent (codex-aisdk for Codex, opencode for OpenCode, pi for Pi) and thinkingLevel (low/medium/high/xhigh).
 - reply_to_session — send an instruction to another session.
 - answer_session_prompt — pick an option for a session BLOCKED on a permission/plan prompt (use the option index from its snapshot line).
 - close_session — shut down a session the user is done with. Resolve the exact id first; never close your own voice session.
@@ -90,7 +90,7 @@ const FLEET_TOOLS: AnthropicTool[] = [
   {
     name: "list_sessions",
     description:
-      "List the user's sessions with ids, titles, agentFamily (opencode/codex/claude), raw agent kind, model, project, status (ok/blocked with blockedReason), and idle time. Call this to resolve a session id before acting on one.",
+      "List the user's sessions with ids, titles, agentFamily (opencode/codex/claude/pi), raw agent kind, model, project, status (ok/blocked with blockedReason), and idle time. Call this to resolve a session id before acting on one.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -102,13 +102,13 @@ const FLEET_TOOLS: AnthropicTool[] = [
   {
     name: "create_session",
     description:
-      "Start a NEW coding-agent session to work on a task OR to investigate something. Give a clear one-line instruction in prompt. Optionally cwd (a repo path from list_repos; omit to default to the user's focused project), agent (codex-aisdk/opencode), thinkingLevel (low/medium/high/xhigh). Returns the new session id. Slow — say a short spoken preamble first.",
+      "Start a NEW coding-agent session to work on a task OR to investigate something. Give a clear one-line instruction in prompt. Optionally cwd (a repo path from list_repos; omit to default to the user's focused project), agent (codex-aisdk/opencode/pi), thinkingLevel (low/medium/high/xhigh). Returns the new session id. Slow — say a short spoken preamble first.",
     input_schema: {
       type: "object",
       properties: {
         prompt: { type: "string" },
         cwd: { type: "string" },
-        agent: { type: "string", enum: ["aisdk", "codex-aisdk", "opencode"] },
+        agent: { type: "string", enum: ["aisdk", "codex-aisdk", "opencode", "pi"] },
         thinkingLevel: {
           type: "string",
           enum: ["low", "medium", "high", "xhigh"],
@@ -217,6 +217,7 @@ function userQs(user: string): string {
 function agentFamily(agent: string | null | undefined): string {
   if (agent === "codex" || agent === "codex-aisdk") return "codex";
   if (agent === "opencode") return "opencode";
+  if (agent === "pi") return "pi";
   return "claude";
 }
 
@@ -290,7 +291,7 @@ async function runTool(
       const cwd = (args.cwd || "").trim();
       if (cwd) payload.cwd = cwd;
       const agent = (args.agent || "").trim();
-      if (["aisdk", "codex-aisdk", "opencode"].includes(agent))
+      if (["aisdk", "codex-aisdk", "opencode", "pi"].includes(agent))
         payload.agent = agent;
       const tl = (args.thinkingLevel || "").trim();
       if (["low", "medium", "high", "xhigh"].includes(tl))
