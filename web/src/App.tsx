@@ -440,6 +440,23 @@ function repoProject(repo: Repo): string {
   return repo.project || projectName(repo.cwd);
 }
 
+function compactPath(path: string): string {
+  return path
+    .replace(/^\/home\/[^/]+(?=\/|$)/, "~")
+    .replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+}
+
+function repoParentLabel(repo: Repo): string {
+  const parts = repo.cwd.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) return repo.cwd;
+  return compactPath(`/${parts.slice(0, -1).join("/")}`);
+}
+
+function repoOptionLabel(repo: Repo): string {
+  const base = repo.custom ? `${repo.name} ↗` : repo.name;
+  return `${base} — ${repoParentLabel(repo)}`;
+}
+
 function titleForSession(session: Session) {
   return (
     session.title ||
@@ -7153,7 +7170,7 @@ function NewSessionDialog({
           >
             {repos.map((item) => (
               <option key={item.cwd} value={item.cwd}>
-                {item.custom ? `${item.name} ↗` : item.name}
+                {repoOptionLabel(item)}
               </option>
             ))}
             <option value="__add__">+ Add custom path…</option>
@@ -7859,7 +7876,7 @@ function NewAutoAgentComposer({
             {repos.length === 0 ? <option value="">(no repos)</option> : null}
             {repos.map((item) => (
               <option key={item.cwd} value={item.cwd}>
-                {item.name}
+                {repoOptionLabel(item)}
               </option>
             ))}
           </select>
@@ -8184,7 +8201,7 @@ function AgentEditorSheet({
             {repos.length === 0 ? <option value="">(no repos)</option> : null}
             {repos.map((item) => (
               <option key={item.cwd} value={item.cwd}>
-                {item.name}
+                {repoOptionLabel(item)}
               </option>
             ))}
           </select>
