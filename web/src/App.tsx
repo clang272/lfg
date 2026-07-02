@@ -6903,6 +6903,9 @@ function NewSessionDialog({
   }
 
   function removeCustomPath(cwd: string) {
+    const repo = repos.find((r) => r.cwd === cwd);
+    const label = repo ? repoOptionLabel(repo) : cwd;
+    if (!window.confirm(`Remove ${label} from the repo picker?`)) return;
     toast.promise(
       api("/api/repos", {
         method: "DELETE",
