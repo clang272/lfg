@@ -7396,22 +7396,20 @@ function NewSessionDialog({
 
       {!projectScoped && (
         <FieldPill flat={variant === "inline"} icon={<Folder className="size-3.5 text-muted-foreground" />}>
-          <select
-            value={selectedRepo}
-            onChange={(e) => {
-              if (e.target.value === "__add__") setBrowseOpen(true);
-              else setRepo(e.target.value);
-            }}
-            aria-label="Repo"
-            className="max-w-28 appearance-none truncate bg-transparent pr-1 text-xs font-medium outline-none"
+          <button
+            type="button"
+            onClick={() => setBrowseOpen(true)}
+            aria-label="Select folder"
+            title={selectedRepo ? compactPath(selectedRepo) : "Select folder"}
+            className="flex max-w-44 items-center gap-1 truncate bg-transparent pr-1 text-xs font-medium outline-none"
           >
-            {repos.map((item) => (
-              <option key={item.cwd} value={item.cwd}>
-                {repoOptionLabel(item)}
-              </option>
-            ))}
-            <option value="__add__">Browse folders…</option>
-          </select>
+            <span>Select Folder</span>
+            {selectedRepo ? (
+              <span className="min-w-0 truncate text-muted-foreground">
+                {compactPath(selectedRepo)}
+              </span>
+            ) : null}
+          </button>
           {selectedIsCustom && (
             <button
               type="button"
