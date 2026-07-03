@@ -6772,7 +6772,7 @@ function DirectoryPicker({
 
   return createPortal(
     <div className="fixed inset-0 z-[90] flex items-end justify-center bg-background/70 p-0 backdrop-blur-sm sm:items-center sm:p-4">
-      <div className="flex max-h-[88dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl border border-border bg-background shadow-2xl sm:rounded-2xl">
+      <div className="flex h-[88dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl border border-border bg-background shadow-2xl sm:h-[min(88dvh,760px)] sm:rounded-2xl">
         <div className="flex items-center gap-3 border-b border-border px-4 py-3">
           <FolderOpen className="size-5 text-muted-foreground" />
           <div className="min-w-0 flex-1">
