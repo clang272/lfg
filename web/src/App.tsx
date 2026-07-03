@@ -2558,9 +2558,14 @@ export function App() {
           <LiveView
             sessions={liveSessions}
             launching={launchingSessions}
+            repos={repos}
             users={users}
             userFilter={userFilter}
             projectFilter={projectFilter}
+            defaultUser={
+              userFilter !== "__all" && userFilter !== "__unassigned" ? userFilter : ""
+            }
+            onReposChanged={loadCore}
             messagesBySid={liveStream.messagesBySid}
             busyBySid={liveStream.busyBySid}
             promptsBySid={liveStream.promptsBySid}
@@ -3281,9 +3286,12 @@ function LiveView({
   // passing `undefined` degrades to an empty render instead of crashing the view.
   sessions = [],
   launching = [],
+  repos,
   users,
   userFilter,
   projectFilter,
+  defaultUser,
+  onReposChanged,
   messagesBySid,
   busyBySid,
   promptsBySid,
@@ -3299,9 +3307,12 @@ function LiveView({
 }: {
   sessions: Session[];
   launching?: LaunchingSession[];
+  repos: Repo[];
   users: User[];
   userFilter: string;
   projectFilter: string;
+  defaultUser: string;
+  onReposChanged: () => Promise<void>;
   messagesBySid: Record<string, Message[]>;
   busyBySid: Record<string, boolean>;
   promptsBySid: Record<string, SessionPrompt | null>;
@@ -3320,7 +3331,7 @@ function LiveView({
   // so it can switch which session it shows without unmounting. `origin` anchors
   // the open/close morph to the title the user long-pressed.
   const [sheet, setSheet] = useState<{ sid: string; origin: DOMRect } | null>(null);
-  if (!sessions.length && !findings.length) {
+  if (!isWide && !sessions.length && !findings.length) {
     return (
       <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 text-center">
         <div className="flex size-14 items-center justify-center rounded-2xl bg-muted">
@@ -3395,8 +3406,11 @@ function LiveView({
     return (
       <RailStage
         sessions={sessions}
+        repos={repos}
         users={users}
+        defaultUser={defaultUser}
         projectFilter={projectFilter}
+        onReposChanged={onReposChanged}
         messagesBySid={messagesBySid}
         busyBySid={busyBySid}
         promptsBySid={promptsBySid}
@@ -3526,8 +3540,11 @@ function LiveView({
 // is confined to the small status dot in the rail. Up to 4 columns.
 function RailStage({
   sessions = [],
+  repos,
   users,
+  defaultUser,
   projectFilter,
+  onReposChanged,
   messagesBySid,
   busyBySid,
   promptsBySid,
@@ -3542,8 +3559,11 @@ function RailStage({
   onNew,
 }: {
   sessions: Session[];
+  repos: Repo[];
   users: User[];
+  defaultUser: string;
   projectFilter: string;
+  onReposChanged: () => Promise<void>;
   messagesBySid: Record<string, Message[]>;
   busyBySid: Record<string, boolean>;
   promptsBySid: Record<string, SessionPrompt | null>;
@@ -3586,6 +3606,7 @@ function RailStage({
   }, [layoutScope, railCollapsedStorageKey]);
   const [pinned, setPinned] = useState<string[]>(readPinned);
   const [preview, setPreview] = useState<string | null>(null);
+  const [composerOpen, setComposerOpen] = useState(() => !sessions.length && !findings.length);
   const [railCollapsed, setRailCollapsed] = useState<boolean>(readRailCollapsed);
   // Keyboard cursor (highlighted rail row) + the shortcuts cheatsheet overlay.
   const [cursor, setCursor] = useState<string | null>(null);
@@ -3644,6 +3665,9 @@ function RailStage({
     }
     return cols.slice(0, MAX_COLUMNS);
   }, [validPinned, preview, bySid]);
+  useEffect(() => {
+    if (!sessions.length && !findings.length && !columnIds.length) setComposerOpen(true);
+  }, [sessions.length, findings.length, columnIds.length]);
 
   // Stage columns are open transcript surfaces even though they do not use the
   // mobile card collapse toggle. Keep the app-level lazy stream manager in sync
@@ -3661,13 +3685,15 @@ function RailStage({
   // Never leave the stage empty when there's something to show: preview the
   // first working session (or the first session) on load.
   useEffect(() => {
+    if (composerOpen) return;
     if (columnIds.length || !sessions.length) return;
     const first = sessions.find((s) => busyBySid[s.sessionId ?? ""]) ?? sessions[0];
     if (first?.sessionId) setPreview(first.sessionId);
-  }, [columnIds.length, sessions, busyBySid]);
+  }, [composerOpen, columnIds.length, sessions, busyBySid]);
 
   const openSession = useCallback(
     (sid: string) => {
+      setComposerOpen(false);
       if (validPinned.includes(sid)) return; // already a persistent column
       setPreview(sid);
     },
@@ -3691,6 +3717,10 @@ function RailStage({
   const closeColumn = useCallback((sid: string) => {
     setPinned((prev) => prev.filter((x) => x !== sid));
     setPreview((p) => (p === sid ? null : p));
+  }, []);
+  const openComposer = useCallback(() => {
+    setComposerOpen(true);
+    setPreview(null);
   }, []);
 
   // Rail grouping + dots use the stabilized busy state so rows don't bounce
@@ -3792,8 +3822,8 @@ function RailStage({
 
   // Latest values for the global key handler, so it binds once but never reads
   // stale state.
-  const kb = useRef({ orderedSids, cursor, preview, columnIds, activate, selectTo, togglePin, closeColumn, closeSession, setCursor, setPreview, setRailCollapsed, setShowHelp, showHelp, busyBySid, interruptSid, onNew });
-  kb.current = { orderedSids, cursor, preview, columnIds, activate, selectTo, togglePin, closeColumn, closeSession, setCursor, setPreview, setRailCollapsed, setShowHelp, showHelp, busyBySid, interruptSid, onNew };
+  const kb = useRef({ orderedSids, cursor, preview, columnIds, activate, selectTo, togglePin, closeColumn, closeSession, setCursor, setPreview, setRailCollapsed, setShowHelp, showHelp, busyBySid, interruptSid, onNew: openComposer });
+  kb.current = { orderedSids, cursor, preview, columnIds, activate, selectTo, togglePin, closeColumn, closeSession, setCursor, setPreview, setRailCollapsed, setShowHelp, showHelp, busyBySid, interruptSid, onNew: openComposer };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const s = kb.current;
@@ -3987,7 +4017,7 @@ function RailStage({
         <div className="shrink-0 border-b border-border p-1.5">
           <button
             type="button"
-            onClick={onNew}
+            onClick={openComposer}
             title="New session"
             aria-label="New session"
             className={cn(
@@ -4046,7 +4076,22 @@ function RailStage({
               : "grid-cols-2 grid-rows-2",
         )}
       >
-        {columnIds.length ? (
+        {composerOpen ? (
+          <NewSessionDialog
+            variant="stage"
+            open
+            users={users}
+            repos={repos}
+            scopedProject={projectFilter}
+            onReposChanged={onReposChanged}
+            defaultUser={defaultUser}
+            onClose={() => setComposerOpen(false)}
+            onCreated={async () => {
+              setComposerOpen(false);
+              await onRefresh();
+            }}
+          />
+        ) : columnIds.length ? (
           columnIds.map((sid) => {
             const session = bySid.get(sid);
             if (!session) return null;
@@ -6933,6 +6978,7 @@ function NewSessionDialog({
   //    the orb or the "C" shortcut.
   //  - "inline": mobile home screen — anchored at the bottom of the viewport,
   //    compact at rest and expandable. Always mounted (no open/close).
+  //  - "stage": desktop empty workspace — ChatGPT/Claude-style centered start.
   variant = "drawer",
   expanded = false,
   onExpandedChange,
@@ -6954,7 +7000,7 @@ function NewSessionDialog({
   // into the list and the transition reads as one continuous motion.
   onLaunchStart?: (meta: { prompt: string; agent: string }) => void;
   onReposChanged: () => Promise<void>;
-  variant?: "drawer" | "inline";
+  variant?: "drawer" | "inline" | "stage";
   // Inline only: compact↔full controls toggle (lifted to the parent so the orb
   // and other affordances can drive it).
   expanded?: boolean;
@@ -7424,8 +7470,12 @@ function NewSessionDialog({
         addFiles(event.dataTransfer.files);
       }}
       className={cn(
-        "max-h-[70dvh] overflow-y-auto overscroll-contain px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] transition-colors",
-        variant === "inline" ? "pt-1.5" : "pt-1",
+        "overflow-y-auto overscroll-contain px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] transition-colors",
+        variant === "stage"
+          ? "max-h-[42dvh] pt-2"
+          : variant === "inline"
+            ? "max-h-[70dvh] pt-1.5"
+            : "max-h-[70dvh] pt-1",
         draggingFiles && "bg-primary/8",
       )}
     >
@@ -7459,7 +7509,13 @@ function NewSessionDialog({
           placeholder={attachments.length ? "Add a note for the files…" : "Describe the task for a new session…"}
           className={cn(
             "max-h-[32dvh] resize-none overflow-y-auto border-0 bg-transparent px-1 py-1 pr-10 text-base leading-relaxed shadow-none focus-visible:border-0 focus-visible:ring-0",
-            compact ? "min-h-11" : variant === "inline" ? "min-h-24" : "min-h-40",
+            compact
+              ? "min-h-11"
+              : variant === "inline"
+                ? "min-h-24"
+                : variant === "stage"
+                  ? "min-h-14"
+                  : "min-h-40",
             variant !== "inline" && "max-h-[42dvh]",
           )}
         />
@@ -7630,6 +7686,26 @@ function NewSessionDialog({
   // Mobile home screen: anchor the shared composer inline at the bottom of the
   // viewport. `interactive-widget=resizes-content` shrinks the layout viewport
   // when the soft keyboard opens, so `bottom-0` rides just above the keyboard.
+  if (variant === "stage") {
+    return (
+      <div className="flex h-full min-h-0 flex-col items-center justify-center px-6">
+        <div className="mb-8 text-center text-2xl font-medium text-foreground">
+          Ready when you are.
+        </div>
+        <div
+          aria-busy={busy}
+          className={cn(
+            "w-full max-w-3xl rounded-[1.75rem] border border-border bg-card/95 px-2 py-1.5 shadow-sm",
+            busy && "lfg-composer-launching",
+          )}
+        >
+          {formBody}
+        </div>
+        {directoryPicker}
+      </div>
+    );
+  }
+
   if (variant === "inline") {
     return (
       <>
