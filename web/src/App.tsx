@@ -6739,6 +6739,7 @@ function DirectoryPicker({
   const [payload, setPayload] = useState<FsDirsPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState<string | null>(null);
+  const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -6766,6 +6767,8 @@ function DirectoryPicker({
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setPicking(null));
   };
+
+  const entries = payload?.entries.filter((entry) => showHidden || !entry.hidden) ?? [];
 
   return createPortal(
     <div className="fixed inset-0 z-[90] flex items-end justify-center bg-background/70 p-0 backdrop-blur-sm sm:items-center sm:p-4">
@@ -6812,6 +6815,11 @@ function DirectoryPicker({
           </Button>
         </div>
 
+        <label className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+          <span>Show hidden folders</span>
+          <Switch checked={showHidden} onCheckedChange={setShowHidden} />
+        </label>
+
         {error && (
           <div className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
             {error}
@@ -6838,7 +6846,7 @@ function DirectoryPicker({
                   </span>
                 </button>
               )}
-              {payload?.entries.map((entry) => (
+              {entries.map((entry) => (
                 <div
                   key={entry.path}
                   className={cn(
@@ -6871,7 +6879,7 @@ function DirectoryPicker({
                   </Button>
                 </div>
               ))}
-              {!payload?.entries.length && !loading && (
+              {!entries.length && !loading && (
                 <div className="px-2 py-8 text-sm text-muted-foreground">No readable subfolders.</div>
               )}
             </div>
