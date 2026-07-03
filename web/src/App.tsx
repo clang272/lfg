@@ -3984,6 +3984,21 @@ function RailStage({
             )}
           </button>
         </div>
+        <div className="shrink-0 border-b border-border p-1.5">
+          <button
+            type="button"
+            onClick={onNew}
+            title="New session"
+            aria-label="New session"
+            className={cn(
+              "flex h-9 w-full items-center rounded-lg bg-primary text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 active:scale-[0.98]",
+              railCollapsed ? "justify-center px-0" : "justify-start gap-2 px-2.5",
+            )}
+          >
+            <Plus className="size-4 shrink-0" />
+            {!railCollapsed ? <span>New session</span> : null}
+          </button>
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-2">
           {working.length ? (
             <RailGroup label="Working" count={working.length} collapsed={railCollapsed}>
