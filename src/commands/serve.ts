@@ -1,7 +1,7 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { statSync, mkdirSync, type Dirent } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { extname, join } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { marked } from "marked";
 import { PATHS, installInfo } from "../config.ts";
@@ -105,7 +105,7 @@ import {
 import { testProfile } from "../browser/tool.ts";
 import { listCustomRepos, addCustomRepo, removeCustomRepo } from "../repos-store.ts";
 import { projectName, reposRoot } from "../projects.ts";
-import { resolveSessionCwd, startWorktreeSweep } from "../worktree.ts";
+import { isGitRepo, resolveSessionCwd, startWorktreeSweep } from "../worktree.ts";
 import {
   synthesizeTts,
   transcribeStt,
@@ -122,6 +122,21 @@ import {
 // always offered as a target since it is present and trusted.
 const REPOS_ROOT = reposRoot();
 const SELF_REPO = PATHS.root;
+
+type RepoOption = {
+  name: string;
+  cwd: string;
+  project: string;
+  custom?: boolean;
+  git?: boolean;
+};
+
+type BrowseDir = {
+  name: string;
+  path: string;
+  git: boolean;
+  hidden: boolean;
+};
 
 function uploadExt(contentType: string, filename: string): string {
   const fromName = extname(filename).toLowerCase().replace(/^\./, "");
@@ -262,21 +277,115 @@ async function readLegacyReport(date: string): Promise<string | null> {
   return (await f.exists()) ? await f.text() : null;
 }
 
-async function listRepos() {
+function uniqStrings(items: string[]): string[] {
+  return Array.from(new Set(items.filter(Boolean)));
+}
+
+function parseBrowseRoots(): string[] {
+  const configured = (process.env.LFG_BROWSE_ROOTS ?? "")
+    .split(":")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return uniqStrings(configured.length ? configured : [homedir(), REPOS_ROOT, dirname(SELF_REPO)]);
+}
+
+async function browseRoots(): Promise<string[]> {
+  const roots: string[] = [];
+  for (const raw of parseBrowseRoots()) {
+    const abs = resolve(raw.replace(/^~(?=\/|$)/, homedir()));
+    try {
+      const real = await realpath(abs);
+      const s = await stat(real);
+      if (s.isDirectory()) roots.push(real);
+    } catch {}
+  }
+  return uniqStrings(roots).sort((a, b) => a.localeCompare(b));
+}
+
+function isUnderRoot(path: string, root: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+async function resolveBrowsePath(rawPath: string | null): Promise<string> {
+  const roots = await browseRoots();
+  if (!roots.length) throw new Error("no browse roots are configured");
+  if (!rawPath?.trim()) return roots[0];
+  const abs = resolve(rawPath.replace(/^~(?=\/|$)/, homedir()));
+  let real: string;
+  try {
+    real = await realpath(abs);
+  } catch {
+    throw new Error(`path does not exist: ${abs}`);
+  }
+  if (!roots.some((root) => isUnderRoot(real, root))) {
+    throw new Error("path is outside configured browse roots");
+  }
+  const s = await stat(real);
+  if (!s.isDirectory()) throw new Error(`not a directory: ${real}`);
+  return real;
+}
+
+async function listDirs(rawPath: string | null): Promise<{
+  cwd: string;
+  parent: string | null;
+  roots: string[];
+  entries: BrowseDir[];
+}> {
+  const roots = await browseRoots();
+  const cwd = await resolveBrowsePath(rawPath);
+  const parentPath = dirname(cwd);
+  const parent =
+    parentPath !== cwd && roots.some((root) => isUnderRoot(parentPath, root))
+      ? parentPath
+      : null;
+  const entries: BrowseDir[] = [];
+  let dirents: Dirent[] = [];
+  try {
+    dirents = await readdir(cwd, { withFileTypes: true });
+  } catch {
+    return { cwd, parent, roots, entries };
+  }
+  for (const entry of dirents.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const path = join(cwd, entry.name);
+    let real: string;
+    try {
+      real = await realpath(path);
+      const s = await stat(real);
+      if (!s.isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    if (!roots.some((root) => isUnderRoot(real, root))) continue;
+    entries.push({
+      name: entry.name,
+      path: real,
+      git: isGitRepo(real),
+      hidden: entry.name.startsWith("."),
+    });
+  }
+  return { cwd, parent, roots, entries };
+}
+
+async function listRepos(): Promise<RepoOption[]> {
   let root: string;
   try {
     root = await realpath(REPOS_ROOT);
   } catch {
     root = REPOS_ROOT;
   }
-  const repos: Array<{ name: string; cwd: string; project: string; custom?: boolean }> = [];
-  const addRepo = async (name: string, cwd: string, custom = false) => {
+  const repos: RepoOption[] = [];
+  const addRepo = async (name: string, cwd: string, custom = false, requireGit = true) => {
     if (repos.some((r) => r.cwd === cwd)) return;
     try {
-      await stat(join(cwd, ".git"));
+      const s = await stat(cwd);
+      if (!s.isDirectory()) return;
+      const git = isGitRepo(cwd);
+      if (requireGit && !git) return;
       const project = projectName(cwd);
-      if (repos.some((r) => r.project === project)) return;
-      repos.push(custom ? { name, cwd, project, custom: true } : { name, cwd, project });
+      if (!custom && repos.some((r) => r.project === project)) return;
+      repos.push(custom ? { name, cwd, project, custom: true, git } : { name, cwd, project, git });
     } catch {}
   };
   let entries: Dirent[] = [];
@@ -289,10 +398,10 @@ async function listRepos() {
   }
   // Always offer the lfg repo itself as a target — it is present and trusted.
   await addRepo("lfg", SELF_REPO);
-  // Merge in user-pinned custom paths (repos outside LFG_REPOS_ROOT). Tagged
+  // Merge in user-pinned custom paths (workspaces outside LFG_REPOS_ROOT). Tagged
   // `custom` so the UI can offer a remove affordance; deduped on cwd against
   // anything already discovered above.
-  for (const r of await listCustomRepos()) await addRepo(r.name, r.cwd, true);
+  for (const r of await listCustomRepos()) await addRepo(r.name, r.cwd, true, false);
   repos.sort((a, b) => a.name.localeCompare(b.name));
   return repos;
 }
@@ -1980,6 +2089,16 @@ export async function cmdServe() {
       }
 
       // ---- running claude sessions ----
+      if (path === "/api/fs/dirs") {
+        if (req.method !== "GET") return err(405, "method not allowed");
+        const rawPath = url.searchParams.get("path");
+        try {
+          return json(await listDirs(rawPath));
+        } catch (e) {
+          return err(400, e instanceof Error ? e.message : String(e));
+        }
+      }
+
       if (path === "/api/repos") {
         if (req.method === "POST") {
           const b = (await req.json().catch(() => null)) as {

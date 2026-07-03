@@ -1,8 +1,8 @@
-// Custom project paths — repos that live outside LFG_REPOS_ROOT. The repo
-// picker normally only offers git repos discovered under LFG_REPOS_ROOT (plus
-// lfg itself). This store lets a user pin an arbitrary path on the box so it
-// shows up alongside the scanned ones. Persisted as a flat JSON array so it
-// survives restarts; merged into listRepos() at request time.
+// Custom project paths — workspaces that live outside LFG_REPOS_ROOT. The
+// picker normally offers git repos discovered under LFG_REPOS_ROOT (plus lfg
+// itself). This store lets a user pin any directory on the box so it shows up
+// alongside the scanned ones. Persisted as a flat JSON array so it survives
+// restarts; merged into listRepos() at request time.
 
 import { mkdir, stat, realpath } from "node:fs/promises";
 import { join, resolve, basename } from "node:path";
@@ -47,8 +47,8 @@ async function canonical(rawPath: string): Promise<string> {
   }
 }
 
-// Add a custom project path. Validates it exists and is a git repo (we only
-// launch agents into git repos). Name defaults to the directory basename.
+// Add a custom project path. Validates it exists and is a directory. Name
+// defaults to the directory basename.
 // Idempotent on cwd — re-adding an existing path just updates its name.
 export async function addCustomRepo(
   rawPath: string,
@@ -62,11 +62,6 @@ export async function addCustomRepo(
     throw new Error(`path does not exist: ${cwd}`);
   }
   if (!info.isDirectory()) throw new Error(`not a directory: ${cwd}`);
-  try {
-    await stat(join(cwd, ".git"));
-  } catch {
-    throw new Error(`not a git repo (no .git): ${cwd}`);
-  }
   const name = (rawName?.trim() || basename(cwd) || cwd).slice(0, 60);
   const repo: CustomRepo = { name, cwd };
   await ensure();

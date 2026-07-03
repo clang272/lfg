@@ -42,7 +42,9 @@ import {
   ChevronRight,
   ChevronUp,
   Folder,
+  FolderOpen,
   GitFork,
+  Home,
   Loader2,
   MessageSquare,
   Mic,
@@ -174,7 +176,9 @@ type Session = {
 type LaunchingSession = { id: string; prompt: string; agent: string };
 
 type User = { email: string; name?: string; avatar?: string };
-type Repo = { name: string; cwd: string; project?: string; custom?: boolean };
+type Repo = { name: string; cwd: string; project?: string; custom?: boolean; git?: boolean };
+type FsDir = { name: string; path: string; git: boolean; hidden: boolean };
+type FsDirsPayload = { cwd: string; parent: string | null; roots: string[]; entries: FsDir[] };
 
 // Auto agents: a streamlined agent is JUST a prompt + a schedule. It emits
 // findings (notifications), not reports.
@@ -453,7 +457,7 @@ function repoParentLabel(repo: Repo): string {
 }
 
 function repoOptionLabel(repo: Repo): string {
-  const base = repo.custom ? `${repo.name} ↗` : repo.name;
+  const base = repo.custom ? `${repo.name}${repo.git === false ? " folder" : " ↗"}` : repo.name;
   return `${base} — ${repoParentLabel(repo)}`;
 }
 
@@ -6721,6 +6725,177 @@ type ResumableSession = {
   agent: "claude" | "codex";
 };
 
+function DirectoryPicker({
+  open,
+  onClose,
+  onPick,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onPick: (path: string) => Promise<void>;
+}) {
+  const [path, setPath] = useState("");
+  const [draftPath, setDraftPath] = useState("");
+  const [payload, setPayload] = useState<FsDirsPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [picking, setPicking] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    setError(null);
+    api<FsDirsPayload>(`/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`)
+      .then((data) => {
+        setPayload(data);
+        setDraftPath(data.cwd);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setPayload(null);
+      })
+      .finally(() => setLoading(false));
+  }, [open, path]);
+
+  if (!open) return null;
+
+  const choose = (target: string) => {
+    setPicking(target);
+    onPick(target)
+      .then(() => onClose())
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setPicking(null));
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-[90] flex items-end justify-center bg-background/70 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+      <div className="flex max-h-[88dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl border border-border bg-background shadow-2xl sm:rounded-2xl">
+        <div className="flex items-center gap-3 border-b border-border px-4 py-3">
+          <FolderOpen className="size-5 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold">Browse machine folders</div>
+            <div className="truncate text-xs text-muted-foreground">
+              {payload?.cwd ? compactPath(payload.cwd) : "Loading directories"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close folder browser"
+            className="flex size-8 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+          <button
+            type="button"
+            onClick={() => setPath("")}
+            title="Browse root"
+            aria-label="Browse root"
+            className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <Home className="size-4" />
+          </button>
+          <input
+            value={draftPath}
+            onChange={(e) => setDraftPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setPath(draftPath.trim());
+            }}
+            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus:border-foreground/40"
+            aria-label="Folder path"
+          />
+          <Button type="button" size="sm" variant="secondary" onClick={() => setPath(draftPath.trim())}>
+            Go
+          </Button>
+        </div>
+
+        {error && (
+          <div className="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
+            {error}
+          </div>
+        )}
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {loading ? (
+            <div className="flex items-center gap-2 px-2 py-8 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" /> Loading folders
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {payload?.parent && (
+                <button
+                  type="button"
+                  onClick={() => setPath(payload.parent!)}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <ChevronLeft className="size-4 text-muted-foreground" />
+                  <span className="font-medium">Parent folder</span>
+                  <span className="min-w-0 truncate text-xs text-muted-foreground">
+                    {compactPath(payload.parent)}
+                  </span>
+                </button>
+              )}
+              {payload?.entries.map((entry) => (
+                <div
+                  key={entry.path}
+                  className={cn(
+                    "flex items-center gap-2 rounded-md px-2 py-1.5",
+                    entry.hidden ? "text-muted-foreground" : "text-foreground",
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setPath(entry.path)}
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left hover:bg-muted"
+                  >
+                    <Folder className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{entry.name}</span>
+                    {entry.git && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                        <GitFork className="size-3" /> git
+                      </span>
+                    )}
+                    <ChevronRight className="size-4 shrink-0 text-muted-foreground/70" />
+                  </button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    disabled={!!picking}
+                    onClick={() => choose(entry.path)}
+                  >
+                    {picking === entry.path ? <Loader2 className="size-4 animate-spin" /> : "Use"}
+                  </Button>
+                </div>
+              ))}
+              {!payload?.entries.length && !loading && (
+                <div className="px-2 py-8 text-sm text-muted-foreground">No readable subfolders.</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-3">
+          <div className="min-w-0 truncate text-xs text-muted-foreground">
+            {payload?.roots.length ? `Roots: ${payload.roots.map(compactPath).join(", ")}` : null}
+          </div>
+          <Button
+            type="button"
+            disabled={!payload?.cwd || !!picking}
+            onClick={() => payload?.cwd && choose(payload.cwd)}
+          >
+            {picking === payload?.cwd ? <Loader2 className="size-4 animate-spin" /> : "Use current"}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function NewSessionDialog({
   open,
   repos,
@@ -6768,6 +6943,7 @@ function NewSessionDialog({
     () => (localStorage.getItem("lfg_v2_agent") as AgentKind | null) || "aisdk",
   );
   const [repo, setRepo] = useState(() => localStorage.getItem("lfg_v2_repo") || "");
+  const [browseOpen, setBrowseOpen] = useState(false);
   const [model, setModel] = useState(
     () =>
       localStorage.getItem(`lfg_model_${localStorage.getItem("lfg_v2_agent") || "aisdk"}`) ||
@@ -6876,30 +7052,19 @@ function NewSessionDialog({
   const selectedRepo = scopedRepo?.cwd || repo || repos[0]?.cwd || "";
   const selectedIsCustom = repos.some((r) => r.cwd === selectedRepo && r.custom);
 
-  // Pin an arbitrary git repo on the box (outside LFG_REPOS_ROOT) into the
+  // Pin an arbitrary directory on the box (outside LFG_REPOS_ROOT) into the
   // picker. The path is resolved/validated server-side; on success we refresh
   // the repo list and select the freshly added path.
-  function addCustomPath() {
-    const input = window.prompt("Absolute path to a git repo (e.g. ~/work/api):");
-    if (input === null) return;
-    const path = input.trim();
+  async function addCustomPath(path: string) {
     if (!path) return;
-    toast.promise(
-      api<{ repos: Repo[] }>("/api/repos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      }).then(async (r) => {
-        const added = r.repos.find((x) => x.custom && !repos.some((p) => p.cwd === x.cwd));
-        await onReposChanged();
-        if (added) setRepo(added.cwd);
-      }),
-      {
-        loading: "Adding project…",
-        success: "Project added",
-        error: (e) => (e instanceof Error ? e.message : "Couldn't add project"),
-      },
-    );
+    const r = await api<{ repos: Repo[] }>("/api/repos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const added = r.repos.find((x) => x.cwd === path) ?? r.repos.find((x) => x.custom && !repos.some((p) => p.cwd === x.cwd));
+    await onReposChanged();
+    if (added) setRepo(added.cwd);
   }
 
   function removeCustomPath(cwd: string) {
@@ -7165,7 +7330,7 @@ function NewSessionDialog({
           <select
             value={selectedRepo}
             onChange={(e) => {
-              if (e.target.value === "__add__") addCustomPath();
+              if (e.target.value === "__add__") setBrowseOpen(true);
               else setRepo(e.target.value);
             }}
             aria-label="Repo"
@@ -7176,7 +7341,7 @@ function NewSessionDialog({
                 {repoOptionLabel(item)}
               </option>
             ))}
-            <option value="__add__">+ Add custom path…</option>
+            <option value="__add__">Browse folders…</option>
           </select>
           {selectedIsCustom && (
             <button
@@ -7423,40 +7588,62 @@ function NewSessionDialog({
     </form>
   );
 
+  const directoryPicker = (
+    <DirectoryPicker
+      open={browseOpen}
+      onClose={() => setBrowseOpen(false)}
+      onPick={(path) => {
+        const promise = addCustomPath(path);
+        toast.promise(promise, {
+          loading: "Adding folder…",
+          success: "Folder added",
+          error: (e) => (e instanceof Error ? e.message : "Couldn't add folder"),
+        });
+        return promise;
+      }}
+    />
+  );
+
   // Mobile home screen: anchor the shared composer inline at the bottom of the
   // viewport. `interactive-widget=resizes-content` shrinks the layout viewport
   // when the soft keyboard opens, so `bottom-0` rides just above the keyboard.
   if (variant === "inline") {
     return (
-      <div
-        aria-busy={busy}
-        className={cn(
-          "pointer-events-auto fixed inset-x-0 bottom-0 z-[55] border-t border-border/60 bg-background/95 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] backdrop-blur-xl",
-          busy && "lfg-composer-launching",
-        )}
-      >
-        <div className="mx-auto max-w-lg">{formBody}</div>
-      </div>
+      <>
+        <div
+          aria-busy={busy}
+          className={cn(
+            "pointer-events-auto fixed inset-x-0 bottom-0 z-[55] border-t border-border/60 bg-background/95 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] backdrop-blur-xl",
+            busy && "lfg-composer-launching",
+          )}
+        >
+          <div className="mx-auto max-w-lg">{formBody}</div>
+        </div>
+        {directoryPicker}
+      </>
     );
   }
 
   return (
-    <Drawer
-      open
-      // Let the browser (viewport `interactive-widget=resizes-content`) handle the
-      // on-screen keyboard. Vaul's default reposition imperatively rewrites the
-      // sheet's height/bottom on every visualViewport change, which fights the
-      // reflow and causes the layout shift/jump when a field takes focus.
-      repositionInputs={false}
-      onOpenChange={(o) => {
-        if (!o) onClose();
-      }}
-    >
-      <DrawerContent className="mx-auto max-w-lg">
-        <DrawerTitle className="sr-only">New session</DrawerTitle>
-        {formBody}
-      </DrawerContent>
-    </Drawer>
+    <>
+      <Drawer
+        open
+        // Let the browser (viewport `interactive-widget=resizes-content`) handle the
+        // on-screen keyboard. Vaul's default reposition imperatively rewrites the
+        // sheet's height/bottom on every visualViewport change, which fights the
+        // reflow and causes the layout shift/jump when a field takes focus.
+        repositionInputs={false}
+        onOpenChange={(o) => {
+          if (!o) onClose();
+        }}
+      >
+        <DrawerContent className="mx-auto max-w-lg">
+          <DrawerTitle className="sr-only">New session</DrawerTitle>
+          {formBody}
+        </DrawerContent>
+      </Drawer>
+      {directoryPicker}
+    </>
   );
 }
 
