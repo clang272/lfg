@@ -7443,6 +7443,28 @@ function NewSessionDialog({
     </button>
   );
 
+  const actionButtons = (
+    <div className="flex shrink-0 items-center gap-2">
+      <Button
+        size="icon"
+        type="button"
+        variant={draggingFiles ? "brand-soft" : "tint"}
+        className="size-9"
+        onClick={() => fileInputRef.current?.click()}
+        aria-label="Attach files"
+        title="Attach files"
+        disabled={busy}
+      >
+        <Paperclip className="size-4" />
+      </Button>
+      <Button type="submit" variant="secondary" disabled={busy || !selectedRepo}>
+        {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+        Start
+      </Button>
+    </div>
+  );
+  const statusText = error || (agentShowsClaudeUsage(agent) ? usage : "") || "";
+
   const formBody = (
     <form
       onSubmit={submit}
@@ -7468,12 +7490,12 @@ function NewSessionDialog({
         addFiles(event.dataTransfer.files);
       }}
       className={cn(
-        "overflow-y-auto overscroll-contain px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] transition-colors",
+        "overscroll-contain px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] transition-colors",
         variant === "stage"
-          ? "max-h-[42dvh] pt-2"
+          ? "overflow-visible pt-2"
           : variant === "inline"
-            ? "max-h-[70dvh] pt-1.5"
-            : "max-h-[70dvh] pt-1",
+            ? "max-h-[70dvh] overflow-y-auto pt-1.5"
+            : "max-h-[70dvh] overflow-y-auto pt-1",
         draggingFiles && "bg-primary/8",
       )}
     >
@@ -7514,7 +7536,7 @@ function NewSessionDialog({
                 : variant === "stage"
                   ? "min-h-14"
                   : "min-h-40",
-            variant !== "inline" && "max-h-[42dvh]",
+            variant === "stage" ? "max-h-[24dvh]" : variant !== "inline" && "max-h-[42dvh]",
           )}
         />
         <MicButton
@@ -7577,7 +7599,14 @@ function NewSessionDialog({
         </div>
       ) : null}
 
-      {variant === "inline" ? (
+      {variant === "stage" ? (
+        <div className="mt-2 flex min-h-10 items-center justify-between gap-3">
+          <div className="min-w-0 flex-1 overflow-x-auto">
+            {controlsInner}
+          </div>
+          {actionButtons}
+        </div>
+      ) : variant === "inline" ? (
         // Single constant-height row: the agent toggle stays put while the
         // controls (and the recent button tucked at their end) reveal to the
         // right when expanded. Collapsed shows only the toggle.
@@ -7621,6 +7650,7 @@ function NewSessionDialog({
       <div
         className={cn(
           "flex items-center justify-between gap-3",
+          variant === "stage" && "hidden",
           compact ? "mt-2" : "mt-4",
         )}
       >
@@ -7630,27 +7660,21 @@ function NewSessionDialog({
             error ? "text-destructive" : "text-muted-foreground",
           )}
         >
-          {error || (agentShowsClaudeUsage(agent) ? usage : "") || ""}
+          {statusText}
         </span>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
-            size="icon"
-            type="button"
-            variant={draggingFiles ? "brand-soft" : "tint"}
-            className="size-9"
-            onClick={() => fileInputRef.current?.click()}
-            aria-label="Attach files"
-            title="Attach files"
-            disabled={busy}
-          >
-            <Paperclip className="size-4" />
-          </Button>
-          <Button type="submit" variant="secondary" disabled={busy || !selectedRepo}>
-            {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-            Start
-          </Button>
-        </div>
+        {actionButtons}
       </div>
+
+      {variant === "stage" && statusText ? (
+        <div
+          className={cn(
+            "mt-1 truncate px-1 text-xs",
+            error ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {statusText}
+        </div>
+      ) : null}
 
       {resumeOpen ? (
         <ResumeSessionSheet
